@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest Version="8.0"
+    ExtensionBundleId="com.workbuddy.ai.preflight"
+    ExtensionBundleVersion="1.0.0"
+    ExtensionBundleName="AI印前检查面板"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ExtensionList>
+    <Extension Id="com.workbuddy.ai.preflight.panel" Version="1.0.0"/>
+  </ExtensionList>
+  <ExecutionEnvironment>
+    <HostList>
+      <Host Name="ILST" Version="[17.0,99.9]"/>
+    </HostList>
+    <LocaleList>
+      <Locale Code="All"/>
+    </LocaleList>
+    <RequiredRuntimeList>
+      <RequiredRuntime Name="CSXS" Version="9.0"/>
+    </RequiredRuntimeList>
+  </ExecutionEnvironment>
+  <DispatchInfoList>
+    <Extension Id="com.workbuddy.ai.preflight.panel">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <ScriptPath>./jsx/preflight.jsx</ScriptPath>
+          <CEFCommandLine/>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>true</AutoVisible>
+        </Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>印前检查-雪糕</Menu>
+          <Geometry>
+            <Size>
+              <Width>420</Width>
+              <Height>900</Height>
+            </Size>
+            <MinSize>
+              <Width>260</Width>
+              <Height>180</Height>
+            </MinSize>
+            <MaxSize>
+              <Width>800</Width>
+              <Height>2400</Height>
+            </MaxSize>
+          </Geometry>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+  </DispatchInfoList>
+</ExtensionManifest>
