@@ -2,11 +2,11 @@
 (function () {
   "use strict";
 
-  var JS_BUILD = "20260922-1";
+  var JS_BUILD = "20260922-4";
   // 必须与 jsx/preflight.jsx 里的 PF_BUILD 保持一致。
   // JSX 每次返回都会带上它的构建号,前端据此判断 ExtendScript 引擎里
   // 加载的是不是当前版本 —— 不一致就强制 $.evalFile 重载(见 execJsx)。
-  var JSX_BUILD = "8.3";
+  var JSX_BUILD = "8.6";
 
   // 全局错误捕获: 把任何未捕获异常显示到面板,便于定位"空白"问题
   window.onerror = function (msg, url, line, col) {
@@ -24,20 +24,26 @@
 
   // Base64 解码 + UTF-8 还原
   function b64ToStr(b64) {
-    var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    var bytes = [];
     b64 = String(b64).replace(/[^A-Za-z0-9+/=]/g, "");
-    var buf = 0, bits = 0;
-    for (var i = 0; i < b64.length; i++) {
-      var c = b64.charAt(i);
-      if (c === "=") break;
-      var idx = chars.indexOf(c);
-      if (idx < 0) continue;
-      buf = (buf << 6) | idx;
-      bits += 6;
-      if (bits >= 8) {
-        bits -= 8;
-        bytes.push((buf >> bits) & 0xFF);
+    var bytes = [];
+    // v8.6: 优先用 CEP 宿主(Chromium)原生 atob —— 原逐字符 chars.indexOf 是每字符
+    //   O(64) 扫描;atob 由原生实现、快一个量级,还省掉那张 64 字符表。
+    //   宿主万一没有 atob 时退回原来的纯 JS 解码(行为一致),不冒"某台机器解不出来"的险。
+    var bin = null;
+    try { if (typeof atob === "function") bin = atob(b64); } catch (eAtob) { bin = null; }
+    if (bin !== null) {
+      for (var bi = 0; bi < bin.length; bi++) bytes.push(bin.charCodeAt(bi) & 0xFF);
+    } else {
+      var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+      var buf = 0, bits = 0;
+      for (var i = 0; i < b64.length; i++) {
+        var c = b64.charAt(i);
+        if (c === "=") break;
+        var idx = chars.indexOf(c);
+        if (idx < 0) continue;
+        buf = (buf << 6) | idx;
+        bits += 6;
+        if (bits >= 8) { bits -= 8; bytes.push((buf >> bits) & 0xFF); }
       }
     }
     var out = "";
@@ -165,11 +171,17 @@
   // v8.0: keepNotice —— 操作后(转曲/嵌入)触发的刷新必须**保留**本次成功提示。
   //   旧版 showNotice() 之后立刻 run(),而 run() 第一件事就是清 #notice ⇒ 操作反馈一闪即没。
   //   手动点"开始检查"时不传(照旧清掉残留旧提示);提示本身仍由 showNotice 的 5 秒计时器收尾。
+  // v8.6: 重入锁 —— 超时只是"前端不再等",ExtendScript 里的扫描仍在跑(单线程,停不下来)。
+  //   旧版超时后按钮立即恢复可点,再点会把 runPreflight() 排队再跑一遍(总耗时翻倍、
+  //   两次结果先后覆盖渲染)。scanBusy 期间忽略点击,并给一句提示,免得"点了没反应"。
+  var scanBusy = false;
   function run(keepNotice) {
     if (!inCEP()) {
       showError("未检测到 CEP 环境。此页面需在 Illustrator 的扩展面板中运行。");
       return;
     }
+    if (scanBusy) { showNotice("正在检查中，请稍候再试。"); return; }
+    scanBusy = true;
     $("btnRun").disabled = true;
     $("loading").classList.remove("hidden");
     $("error").classList.add("hidden");
@@ -192,6 +204,7 @@
 
     execJsx("runPreflight();", function (data, raw) {
       // v8.1: 不再因超时丢弃迟到的结果 —— 照常渲染,并补一条"耗时较长"提示
+      scanBusy = false;   // v8.6: 必须先解锁再分支 —— 下面有提前 return,漏了就锁死面板
       clearTimeout(timer);
       $("btnRun").disabled = false;
       $("loading").classList.add("hidden");
@@ -697,7 +710,14 @@
     $("loading").classList.remove("hidden");
     var btns = document.querySelectorAll(".btn-action");
     for (var bi = 0; bi < btns.length; bi++) btns[bi].disabled = true;
+    // v8.6: 大 PDF 栅格化等操作可能远超 20 秒,期间 loading 一直转却毫无反馈。
+    //   复用 run() 的超时口径: 20 秒补一句"仍在继续";操作本身不中断
+    //   (ExtendScript 无多线程,停不下来),回调到达时清掉计时器。
+    var actTimer = setTimeout(function () {
+      showNotice("操作耗时较长，后台仍在继续，完成后会自动刷新结果。");
+    }, 20000);
     execJsx(jsxFns, function (data, raw) {
+      clearTimeout(actTimer);
       actionBusy = false;
       if (data && data.ok) {
         // v7.1: 不再"成功词 + 详情"两句并排(原为"转曲完成。 已转曲 5 个文本框。")——

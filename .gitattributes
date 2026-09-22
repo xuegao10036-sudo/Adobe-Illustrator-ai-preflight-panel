@@ -1,0 +1,21 @@
+# 换行符统一：仓库内一律 LF，检出时按平台/类型还原。
+# 关键：Windows 批处理必须是 CRLF —— LF 的 .bat 在 cmd.exe 里
+# 跑 if (...) / for 块可能异常；从 GitHub 克隆到 Windows 尤其容易踩到。
+
+*.bat  text eol=crlf
+
+*.js   text eol=lf
+*.jsx  text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.xml  text eol=lf
+*.md   text eol=lf
+*.txt  text eol=lf
+
+# 二进制文件不做换行转换
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.zip  binary

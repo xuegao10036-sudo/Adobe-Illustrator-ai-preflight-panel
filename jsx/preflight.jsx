@@ -61,7 +61,15 @@ function pfStringify(value) {
       .replace(/"/g, '\\"')
       .replace(/\r/g, "\\r")
       .replace(/\n/g, "\\n")
-      .replace(/\t/g, "\\t");
+      .replace(/\t/g, "\\t")
+      // v8.6: 兜底转义其余 C0 控制字符(0x00~0x1F, 含 \b \f \v)。
+      //   只转 \r\n\t 是不够的 —— 文本框 contents 里若混入 \u0008 之类控制字符,
+      //   产出的 JSON 就是非法的,前端 JSON.parse 失败 ⇒ parseResult 返回 null
+      //   ⇒ 整轮结果作废, 面板只报"脚本执行失败"。放在最后(前三条已把它们转成可见形式)。
+      //   ⚠ 必须补足 4 位十六进制: 0x10~0x1F 直接拼 "\u000"+h 会得到 5 位(f), 仍非法。
+      .replace(/[\u0000-\u001f]/g, function (c) {
+        return "\\u" + ("0000" + c.charCodeAt(0).toString(16)).slice(-4);
+      });
   }
   function ser(v) {
     if (v === null || v === undefined) return "null";
@@ -80,6 +88,9 @@ function pfStringify(value) {
     }
     var parts = [];
     for (var k in v) {
+      // v8.6: 跳过内部去重键 _k(仅 jsx 侧"同值合并"用, 前端从不读它)。
+      //   只跳这一个具名键 —— 别写成 k.charAt(0)==="_", n 是前端在用的计数字段。
+      if (k === "_k") continue;
       if (v.hasOwnProperty(k)) parts.push('"' + esc(k) + '":' + ser(v[k]));
     }
     return "{" + parts.join(",") + "}";
@@ -92,7 +103,7 @@ function pfStringify(value) {
 // 版本一致 → 跳过 $.evalFile 直接调用函数(省掉每次重载 28KB 脚本);
 // 不一致/不存在 → 强制重载一次。这样开发期改完 JSX 无需重启 AI。
 // v7.2: 仅随版本号递增(本版为面板文案一致化,检测逻辑与返回结构零改动)。
-var PF_BUILD = "8.3";
+var PF_BUILD = "8.6";
 
 var PT2MM = 0.3527777778;     // 1 pt = 0.3528 mm
 var MAX_SCAN = 3000;          // 每类对象最多扫描数量(防大卡死)
@@ -138,10 +149,23 @@ function pfInkSum(c) {
   return null;
 }
 
-// 文本框填充色(混合颜色时 ExtendScript 会抛异常)
-function pfTextInk(tf) {
-  try { return pfInkSum(tf.textRange.characterAttributes.fillColor); }
-  catch (e) { return { total: -1, type: "mixed", desc: "混合颜色" }; }
+// v8.5: 一次读齐 CMYK 四分量,同时产出"油墨总量"与"极浅通道"判定。
+//   旧实现里 pfInkSum 与 pfLightChannel 各自回读四分量(共 8 次跨桥) ⇒ 合并为 4 次。
+//   非 CMYK(Gray/RGB/专色/其他)原样交给 pfInkSum,light 恒为 null(与旧口径一致)。
+//   返回 { total, type, desc, light }; light = 极浅说明串(str) 或 null。
+//   ⚠ 读分量可能抛异常(混合色),由调用方 try/catch 兜住 —— 与 pfInkSum 行为一致。
+function pfInkLightBoth(c) {
+  if (!c) return null;
+  var tn = "";
+  try { tn = c.typename; } catch (e) { return null; }
+  if (tn !== "CMYKColor") return pfInkSum(c);
+  var vc = c.cyan, vm = c.magenta, vy = c.yellow, vk = c.black;   // 各读 1 次
+  var cy = Math.round(vc), mg = Math.round(vm), yl = Math.round(vy), bk = Math.round(vk);
+  var desc = "C" + cy + " M" + mg + " Y" + yl + " K" + bk;
+  // v6.1 口径: 四舍五入后 0<值<5 视为极浅(恰为 0 不算); Gray 不判
+  var light = ((cy > 0 && cy < LIGHT_CH) || (mg > 0 && mg < LIGHT_CH) ||
+               (yl > 0 && yl < LIGHT_CH) || (bk > 0 && bk < LIGHT_CH)) ? desc : null;
+  return { total: vc + vm + vy + vk, type: "cmyk", desc: desc, light: light };  // v8.0: 分档用原值
 }
 
 function pfSnippet(tf) {
@@ -159,20 +183,8 @@ function pfObjName(it) {
   return "";
 }
 
-// v6.1: CMYK 色值极浅检测——某分量四舍五入后 0<值<5 返回该色说明,否则 null。
-//   按四舍五入后的整数判断(与面板显示一致,如 C4.6 显示 C5 即不判);
-//   恰为 0 的分量不算(纯色/纯黑不误报)。Gray 不判(仅按用户口径判 CMYK)。
-function pfLightChannel(c) {
-  if (!c) return null;
-  var tn = "";
-  try { tn = c.typename; } catch (e) { return null; }
-  if (tn !== "CMYKColor") return null;
-  var v = [Math.round(c.cyan), Math.round(c.magenta), Math.round(c.yellow), Math.round(c.black)];
-  for (var i = 0; i < 4; i++) {
-    if (v[i] > 0 && v[i] < LIGHT_CH) return "C" + v[0] + " M" + v[1] + " Y" + v[2] + " K" + v[3];
-  }
-  return null;
-}
+// v8.5: 原 pfLightChannel(单独跑一遍极浅判定)已并入上面的 pfInkLightBoth,
+//   所有调用点统一改为"一次读出 ink+light",不再回读四分量。
 
 // v8.3: 叠印读取——一律包 try/catch,读不到属性 / 属性不存在 / 抛异常 全部当 false。
 //   不写成 obj[prop] 泛读是因为 Adobe 宿主对象对中括号取值偶有怪癖,显式写更稳。
@@ -286,17 +298,28 @@ function pfReturn(res) {
 }
 
 // ============================================================
-// 系统字体表缓存(全局,跨多次检查复用)
-// app.textFonts 可能有上千个字体,逐个读 name 要跨 COM 桥,耗时可达秒级;
-// 缓存后同一 AI 会话内的后续检查直接复用。
-// v5.8 修复: 旧实现只在脚本加载时建一次表,且 jsxReady 优化后脚本不再重载,
-// 用户中途安装/激活字体(如字魂)后缓存永远不更新,一直误报"缺失字体"。
-// 现改为函数化,每次 runPreflight 先比对 textFonts.length(单次跨桥,开销极小),
-// 数量变化才重建全表。
+// 字体可用性探测(全局,跨多次检查复用)
+// v8.5 起: 由"全表快照"改为"**按需探测**"为主。
+//   背景: app.textFonts 可能上千条,旧实现在重建时逐条读 name+family+style
+//   (3×N 次跨桥,真机 N≈1810 ⇒ 可达 1~3 秒);但缺失判定只针对"文档实际出现的
+//   字体名"(去重后通常 5~30 个) ⇒ 只需对这 K 个名按需 getByName。
+// 三重保险(正确性优先):
+//   ① 自检: 用 app.textFonts[0].name(必然存在)试 getByName;
+//      命中才启用按需探测,否则自动回退全表快照(= 老行为)。
+//   ② 兜底: 某个名"探测查不到"时,先建一次全表快照仲裁,防名字不匹配误报缺失。
+//   ③ 失效: app.textFonts.length 变化(装/删字体)时清空探测缓存并重新自检,
+//      与 v5.8 "数量变化才重建"的语义一致。
+// v5.8 沿革: 旧实现只在脚本加载时建一次表,jsxReady 优化后脚本不再重载 ⇒
+//   中途装/激活字体后缓存永不更新、一直误报缺失;故改为每次检查比对 length。
 // ============================================================
-var __pfSysFonts = {};
-var __pfSysFontCount = -1;
-var __pfSysFontsReady = false;
+var __pfSysFonts = {};             // name -> {f,s,ph}: 按需探测命中 / 全表快照 都写这里
+var __pfSysFontCount = -1;         // 全表快照对应的 textFonts.length
+var __pfSysFontsReady = false;     // 全表快照是否可用(空表会把所有字体误报成缺失)
+var __pfFontProbe = {};            // name -> meta(命中) / null(确认查不到)
+var __pfFontCount = -1;            // 上次比对时的 textFonts.length(变化 ⇒ 缓存作废)
+var __pfProbeOn = false;           // 是否启用按需探测(自检通过才 true)
+var __pfProbeChecked = false;      // 自检只做一次(会话内)
+var __pfProbeFallbackDone = false; // 全表兜底仲裁只做一次(会话内)
 
 function pfEnsureFontTable() {
   var n = -1;
@@ -332,14 +355,90 @@ function pfEnsureFontTable() {
   }
 }
 
-pfEnsureFontTable(); // 脚本加载时建首表
+// v8.5: 自检 —— app.textFonts[0].name 必然存在,试 getByName 能否按 name 命中。
+//   命中 ⇒ 按需探测可用;未命中 / 抛异常 / 无该方法 ⇒ 判定不可用,回退全表快照。
+function pfProbeSelfCheck() {
+  __pfProbeChecked = true;
+  __pfProbeOn = false;
+  try {
+    if (typeof app.textFonts.getByName !== "function") return;
+    var n0 = app.textFonts[0].name;
+    if (!n0) return;
+    __pfProbeOn = (app.textFonts.getByName(n0) != null);
+  } catch (eSC) { __pfProbeOn = false; }
+}
 
-// v5.13: 缺失判定统一出口——不在表里,或表里只有占位条目(AI 为文档缺失字体
-// 临时挂的假条目,见 pfEnsureFontTable 内 ph 标记),都算缺失
+// v8.5: 按需探测单个字体名。命中 ⇒ 写入 __pfSysFonts 并返回 true;
+//   查不到 ⇒ 先做一次全表快照仲裁(兜底,防"名字与 getByName 不匹配"误报缺失),
+//   仲裁后仍无该名才返回 false(确属缺失)。
+function pfProbeFont(n) {
+  if (Object.prototype.hasOwnProperty.call(__pfSysFonts, n)) return true;
+  if (!__pfProbeOn) return false;
+  if (Object.prototype.hasOwnProperty.call(__pfFontProbe, n)) {
+    var hit = __pfFontProbe[n];
+    if (hit) { __pfSysFonts[n] = hit; return true; }
+  } else {
+    var meta = null;
+    try {
+      var tf = app.textFonts.getByName(n);
+      if (tf) {
+        var f = "", s = "";
+        try { f = String(tf.family || ""); } catch (e1) {}
+        try { s = String(tf.style || ""); } catch (e2) {}
+        meta = { f: f, s: s, ph: (s === "" && (f === "" || f === n)) };
+      }
+    } catch (eG) { meta = null; }
+    __pfFontProbe[n] = meta;
+    if (meta) { __pfSysFonts[n] = meta; return true; }
+  }
+  // 兜底:探测查不到 ⇒ 建一次全表快照再仲裁(会话内只做一次)
+  if (!__pfProbeFallbackDone) {
+    __pfProbeFallbackDone = true;
+    pfEnsureFontTable();
+    if (Object.prototype.hasOwnProperty.call(__pfSysFonts, n)) return true;
+  }
+  return false;
+}
+
+// v8.5: 统一入口 —— textFonts.length 变化时清缓存并重新自检;
+//   仅当按需探测不可用时才退回"全表快照"(老行为)。
+function pfEnsureFonts() {
+  var n = -1;
+  try { n = app.textFonts.length; } catch (eC) { return; }
+  if (__pfFontCount === n) return;   // 数量未变:缓存仍有效
+  __pfFontCount = n;
+  // 字体数变了(装/删字体) ⇒ 探测缓存 + 全表快照全部作废,重新自检
+  __pfFontProbe = {};
+  __pfProbeFallbackDone = false;
+  __pfSysFonts = {};
+  __pfSysFontCount = -1;
+  __pfSysFontsReady = false;
+  if (!__pfProbeChecked) pfProbeSelfCheck();
+  if (!__pfProbeOn) pfEnsureFontTable();
+}
+
+pfEnsureFonts(); // 脚本加载时探测首表
+
+// v5.13/v8.5: 缺失判定统一出口——不在表里/查不到,或表里只有占位条目
+// (AI 为文档缺失字体临时挂的假条目,见 ph 标记),都算缺失。
+// v8.5: 按需探测模式下先确保该名字已探测(探测内部含"查不到 ⇒ 全表兜底仲裁")。
 function pfIsFontMissing(n) {
+  if (!n || n === "(混合字体)") return false;
   var meta = __pfSysFonts[n];
+  if (__pfProbeOn && !meta) { if (pfProbeFont(n)) meta = __pfSysFonts[n]; }
   if (!meta) return true;
-  return !!meta.ph;
+  if (meta.ph) return true;
+  // v8.4: 第二判据"切分痕迹"——AI 为文档缺失字体伪造的占位条目,其 family/style 恰好是
+  // 字体名在首个连字符处硬切出来的: style=连字符后段, family=前段(连字符→空格)+空格+后段。
+  // 旧 ph 判据(style 为空且 family 空/等于名)对"名中带连字符的缺失字体"整类漏报,
+  // 而真实安装字体的 family 取自真实 name table(如"阿里妈妈方圆体 VF"),不会命中此式。
+  // 真机实测(1810 字体):命中 1、误报 0。
+  var i = n.indexOf("-");
+  if (i >= 0) {
+    var tail = n.substring(i + 1);
+    if (meta.s === tail && meta.f === (n.substring(0, i) + " " + tail)) return true;
+  }
+  return false;
 }
 
 // v5.6: 文档指纹(名称+路径),供前端在面板获得焦点时判断用户是否切换了文档,
@@ -363,7 +462,7 @@ function pfDocKey() {
 function runPreflight() {
   var res = { ok: false };
   try {
-    pfEnsureFontTable(); // v5.8: 每次检查前同步字体表,中途激活/安装的字体不再漏识别
+    pfEnsureFonts(); // v8.5: 每次检查前同步(数量变化才重探/重建),中途激活/安装的字体不再漏识别
     if (app.documents.length === 0) {
       res.error = "当前没有打开的文档，请先打开需要检查的 AI 文件。";
       return pfReturn(res);
@@ -539,19 +638,33 @@ function runPreflight() {
     function scanPathInk(pi) {
       var bp = black.path;
       var nm = pfObjName(pi);
+      // v8.5: stroked / fillColor / strokeColor 各读一次后复用 —— 原实现 stroked 读 3 次
+      //   (油墨/细描边/极浅各一次)、两个色句柄各读 2 次;同一个色对象一次读出 ink+light。
+      var stk = false;
+      try { stk = (pi.stroked === true); } catch (e0) {}
       var fc = null, sc = null;
-      try { fc = pfInkSum(pi.fillColor); } catch (e4) {}
-      try { if (pi.stroked) sc = pfInkSum(pi.strokeColor); } catch (e5) {}
-      if (fc) inkBucket(bp, fc, nm, "填充");
-      if (sc) inkBucket(bp, sc, nm, "描边");
+      try { fc = pi.fillColor; } catch (e1) {}
+      if (stk) { try { sc = pi.strokeColor; } catch (e2) {} }
+      var rfc = null, rsc = null;
+      try { rfc = pfInkLightBoth(fc); } catch (e3) { rfc = null; }
+      try { if (stk) rsc = pfInkLightBoth(sc); } catch (e4) { rsc = null; }
+      if (rfc) inkBucket(bp, rfc, nm, "填充");
+      if (rsc) inkBucket(bp, rsc, nm, "描边");
       // v8.3: 叠印检查(图形侧,pageItem 级)——真机 28.0.0 上 PathItem 的这两个属性名尚未验证,
       //   读不到 / 抛异常由 pfOvp* 兜成 false(宁可不报,绝不误报);色值只在命中时才读,摊薄成本。
-      try { if (pfOvpFill(pi))   pfOvpAdd("path", "填充", pfOvpDesc(pi.fillColor), nm); } catch (e8) {}
-      try { if (pfOvpStroke(pi)) pfOvpAdd("path", "描边", pfOvpDesc(pi.strokeColor), nm); } catch (e9) {}
+      // v8.6: 复用上面已读出的 fc / sc, 不再回读 pi.fillColor / pi.strokeColor
+      try { if (pfOvpFill(pi))   pfOvpAdd("path", "填充", pfOvpDesc(fc), nm); } catch (e8) {}
+      try {
+        if (pfOvpStroke(pi)) {
+          var scO = sc;   // 未描边时 sc 为 null, 此时才补读一次
+          if (!scO) { try { scO = pi.strokeColor; } catch (eScO) {} }
+          pfOvpAdd("path", "描边", pfOvpDesc(scO), nm);
+        }
+      } catch (e9) {}
       // v6.2: 描边过细——已描边且实测宽 <0.1mm(0.005mm 容差,防恰好 0.1mm 误报)
       // v7.8: 同一"实测宽(2 位小数)"只占 1 条,n 累加全量次数(前端仍按 mm 合并显示 ×n)
       try {
-        if (pi.stroked) {
+        if (stk) {
           var swMm = pi.strokeWidth * PT2MM;
           if (swMm >= 0 && swMm < THIN_STROKE_MM - 0.005) {
             bp.thin++;
@@ -561,20 +674,17 @@ function runPreflight() {
         }
       } catch (e6) {}
       // v6.2: 色值极浅——填充/描边任一为 CMYK 且某分量四舍五入后 0<值<5
+      // v8.5: 复用上面一次读出的 light,不再回读色值
       try {
-        var lf = pfLightChannel(pi.fillColor);
-        if (lf) {
+        if (rfc && rfc.light) {
           black.light.count++;
           pfSampleAdd(black.light.samples,
-            { src: "path", where: "填充", desc: lf, name: nm }, lf + "|填充|" + nm + "|path", SAMPLE_CAP);
+            { src: "path", where: "填充", desc: rfc.light, name: nm }, rfc.light + "|填充|" + nm + "|path", SAMPLE_CAP);
         }
-        if (pi.stroked) {
-          var ls = pfLightChannel(pi.strokeColor);
-          if (ls) {
-            black.light.count++;
-            pfSampleAdd(black.light.samples,
-              { src: "path", where: "描边", desc: ls, name: nm }, ls + "|描边|" + nm + "|path", SAMPLE_CAP);
-          }
+        if (rsc && rsc.light) {
+          black.light.count++;
+          pfSampleAdd(black.light.samples,
+            { src: "path", where: "描边", desc: rsc.light, name: nm }, rsc.light + "|描边|" + nm + "|path", SAMPLE_CAP);
         }
       } catch (e7) {}
     }
@@ -706,11 +816,18 @@ function runPreflight() {
           else hidden.truncated = true; // v4.8: 隐藏组超配额只挂 hidden 自己的截断
           return;
         }
-        bleedOf(it, false); // v5.25: 出血先于配额(配额只截断统计,不截断出血测量)
+        // v8.6: 组级出血测量改为"只在子项读不出来时兜底" —— 原来无条件先测一次, 而组的
+        //   geometricBounds 是纯几何量(**含隐藏子项**): 可见组里若有隐藏子项越界, 组级测量
+        //   会把它的超出算进出血(measureItem 每边取 max) ⇒ 可能**漏报出血不足**, 与"隐藏
+        //   内容不参与印刷统计"的口径相悖。可见子项本就各自测过(取 max, 天然幂等) ⇒ 正常
+        //   路径上组级测量既冗余又有害; 只有读不到子项时它才是唯一测量, 那时才该兜。
         try {
           var kids = it.pageItems;
           for (var k = 0; k < kids.length; k++) visitItem(kids[k], depth + 1);
-        } catch (eGk) { sawHidden = true; }   // v8.1: 组内读不到 ⇒ 不敢断言"无隐藏"
+        } catch (eGk) {
+          sawHidden = true;   // v8.1: 组内读不到 ⇒ 不敢断言"无隐藏"
+          bleedOf(it, false); // v5.25 兜底: 子项没下钻成, 退回组级 bounds, 别漏测
+        }
         return;
       }
 
@@ -741,43 +858,59 @@ function runPreflight() {
         // v4.8: 配额检查前置,totalText 只统计实际扫描数(原在配额前++,超限仍虚增)
         if (!underQuota("text")) { fonts.truncated = true; return; }
         fonts.totalText++;
+        // v8.5: characterAttributes 只解析一次 —— 原实现每步都重新解析
+        //   textRange.characterAttributes(字体名 / 字号 / 填充色给油墨 / 填充色给极浅 / 叠印 共 5 遍),
+        //   同一帧要付 5 次链解析的跨桥成本;现在一次取回 ca 全程复用。
+        var ca = null;
+        try { ca = it.textRange.characterAttributes; } catch (eCa) { ca = null; }
         var fn = "";
-        try { fn = it.textRange.characterAttributes.textFont.name; }
+        try { fn = ca.textFont.name; }
         catch (e3) { fn = "(混合字体)"; }
         if (fn && !seen[fn]) { seen[fn] = true; fonts.names.push(fn); }
+        // v8.6: 片段只取一次 —— pfSnippet 是一次跨桥读(contents)+正则, 原来本帧最多被调
+        //   4 次(极小字号/油墨入桶/极浅样本/叠印样本); 而"油墨入桶"那条是无条件执行的,
+        //   所以提前取一次不增加干净帧的成本, 出问题的帧则省下 1~3 次读。
+        var snip = pfSnippet(it);
         // v5.15: 极小字号检测(混合字号帧读 size 会抛异常,跳过不误报)
         try {
-          var fsz = it.textRange.characterAttributes.size;
+          var fsz = ca.size;
           if (typeof fsz === "number" && isFinite(fsz) && fsz > 0 && fsz < TINY_PT) {
             tiny.count++;
             if (fsz < TINY_BAD_PT) tiny.badCount++; // v6.8: <5pt 额外计入重度(嵌套)
-            if (tiny.samples.length < 5) tiny.samples.push({ t: pfSnippet(it), pt: pfRound(fsz) });
+            if (tiny.samples.length < 5) tiny.samples.push({ t: snip, pt: pfRound(fsz) });
           }
         } catch (eSz) {}
-        var cls = pfTextInk(it);
-        if (cls) inkBucket(black.text, cls, pfSnippet(it), "填充");
-        // v6.2: 色值极浅(文字填充色,混合色读取抛异常则跳过)
+        // v8.5: 填充色一次读出"油墨总量 + 极浅"(等价于原 pfTextInk + pfLightChannel 两次读数);
+        //   ca 解析失败或混合色仍按旧口径记 mixed。
+        var rtx = null, fcTx = null;
+        if (!ca) { rtx = { total: -1, type: "mixed", desc: "混合颜色" }; }
+        else {
+          try { fcTx = ca.fillColor; } catch (eFc) { fcTx = null; }
+          try { rtx = pfInkLightBoth(fcTx); } catch (eTi) { rtx = { total: -1, type: "mixed", desc: "混合颜色" }; }
+        }
+        if (rtx) inkBucket(black.text, rtx, snip, "填充");
+        // v6.2: 色值极浅(文字填充色)
         // v7.8: 按不同色值收(与图形侧同一个池),n 累加全量次数
-        try {
-          var ltf = pfLightChannel(it.textRange.characterAttributes.fillColor);
-          if (ltf) {
-            black.light.count++;
-            var ltfName = pfSnippet(it);
-            pfSampleAdd(black.light.samples,
-              { src: "text", where: "填充", desc: ltf, name: ltfName },
-              ltf + "|填充|" + ltfName + "|text", SAMPLE_CAP);
-          }
-        } catch (eLtf) {}
+        if (rtx && rtx.light) {
+          black.light.count++;
+          var ltfName = snip;
+          pfSampleAdd(black.light.samples,
+            { src: "text", where: "填充", desc: rtx.light, name: ltfName },
+            rtx.light + "|填充|" + ltfName + "|text", SAMPLE_CAP);
+        }
         // v8.3: 叠印检查(文字侧)——**只能走字符级**,真机 28.0.0 上 TextFrame 没有
         //   pageItem 级 fillOverprint/strokeOverprint(探针 v1 实测为"缺失")。
         //   两个布尔读很便宜(characterAttributes 本来就已读过),命中才取色值 + 片段。
+        //   v8.5: 复用同一个 ca,不再重新解析。
         try {
-          var oca = it.textRange.characterAttributes;
-          var ovf = pfCharOvpFill(oca), ovs = pfCharOvpStroke(oca);
+          var ovf = pfCharOvpFill(ca), ovs = pfCharOvpStroke(ca);
           if (ovf || ovs) {
-            var ovn = pfSnippet(it);
-            if (ovf) pfOvpAdd("text", "填充", pfOvpDesc(oca.fillColor), ovn);
-            if (ovs) pfOvpAdd("text", "描边", pfOvpDesc(oca.strokeColor), ovn);
+            if (ovf) pfOvpAdd("text", "填充", pfOvpDesc(fcTx), snip);
+            if (ovs) {
+              // v8.6: 描边色只在真的命中叠印描边时才读(多数帧不描边, 这一读可省)
+              var scTx = null; try { scTx = ca.strokeColor; } catch (eSc) {}
+              pfOvpAdd("text", "描边", pfOvpDesc(scTx), snip);
+            }
           }
         } catch (eOvp) {}
         return;
@@ -916,7 +1049,9 @@ function runPreflight() {
     // 检测缺失字体: 与系统字体表对比(表已缓存于全局 __pfSysFonts,跨检查复用)
     try {
       var missMap = {};
-      if (typeof __pfSysFontsReady !== "undefined" && __pfSysFontsReady) {
+      // v8.5: 门控改为"探测已启用 或 全表快照可用" —— 按需探测模式不建全表,
+      //   旧门控(__pfSysFontsReady)会恒为 false ⇒ 缺失检测会整体失效。
+      if (__pfProbeOn || (typeof __pfSysFontsReady !== "undefined" && __pfSysFontsReady)) {
         for (var mfi = 0; mfi < fonts.names.length; mfi++) {
           var n = fonts.names[mfi];
           if (n && n !== "(混合字体)" && pfIsFontMissing(n)) missMap[n] = true;
