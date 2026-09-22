@@ -1,0 +1,297 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+  font-size: 12px;
+  background: #1e1e1e;
+  color: #e6e6e6;
+  overflow-x: hidden;
+  overflow-y: auto;
+  user-select: text;
+}
+
+/* 深色滚动条 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: #1e1e1e; }
+::-webkit-scrollbar-thumb { background: #4a4a4a; border-radius: 5px; border: 2px solid #1e1e1e; }
+::-webkit-scrollbar-thumb:hover { background: #5a5a5a; }
+::-webkit-scrollbar-corner { background: #1e1e1e; }
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: #252526;
+  border-bottom: 1px solid #3a3a3a;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.title { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 5px; }
+.title svg { flex: none; }
+.ver { font-size: 10px; color: #888; font-weight: 400; margin-left: 2px; }
+
+.btn {
+  background: #0e639c;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  /* v6.1: 左右内边距 20px→30px,"开始检查"按钮加宽约 20% */
+  padding: 9px 30px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn:hover { background: #1177bb; }
+.btn:disabled { background: #555; cursor: default; }
+
+/* 卡片内的一键操作按钮: 红色、放大 */
+.btn-action {
+  background: #d33;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  width: 100%;
+}
+.btn-action:hover { background: #e64444; }
+.btn-action:disabled { background: #777; cursor: default; }
+
+.action-row { margin-top: 8px; }
+
+/* 转曲前的图层处理选项(复选框) */
+.chk-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 8px;
+  padding: 6px 8px;
+  background: #1e1e1e;
+  border-radius: 4px;
+}
+label.chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #c8c8c8;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+label.chk input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: #d33;
+  cursor: pointer;
+}
+
+/* 缺失字体条目的橙色三角感叹号 */
+.missing-font .warn-tri {
+  color: #f0a040;
+  font-size: 14px;
+  font-weight: 700;
+  margin-right: 4px;
+  vertical-align: -1px;
+  display: inline-block;
+  transform: scale(1.1);
+}
+
+.loading { padding: 20px; text-align: center; color: #4fc1ff; }
+.error {
+  margin: 10px 12px;
+  padding: 12px 14px;
+  background: #1f1f1f;
+  border: 1px solid #6e2a22;
+  border-left: 4px solid #be1100;
+  border-radius: 4px;
+  color: #f48771;
+  font-size: 14px;
+  line-height: 1.6;
+}
+/* 成功提示(黑底绿边) */
+.notice {
+  margin: 10px 12px;
+  padding: 12px 14px;
+  background: #1f1f1f;
+  border: 1px solid #2e5c40;
+  border-left: 4px solid #2e8a55;
+  border-radius: 4px;
+  color: #4ec98a;
+  font-size: 14px;
+  line-height: 1.6;
+}
+/* 自定义确认框(黑色主题) */
+.modal-mask {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal {
+  background: #1e1e1e;
+  border: 1px solid #4a4a4a;
+  border-radius: 8px;
+  padding: 18px 20px;
+  min-width: 280px;
+  max-width: 86%;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6);
+}
+.modal-title {
+  color: #e6e6e6;
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.modal-msg {
+  color: #d8d8d8;
+  font-size: 15px;
+  line-height: 1.7;
+  margin-bottom: 16px;
+  white-space: pre-line;
+  word-break: break-all;
+}
+.modal-btns {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.modal-btn {
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  padding: 10px 28px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.modal-cancel { background: #3a3a3a; color: #e6e6e6; }
+.modal-cancel:hover { background: #4a4a4a; }
+.modal-ok { background: #d33; color: #fff; }
+.modal-ok:hover { background: #e64444; }
+
+.results { padding: 10px 10px 4px; }
+
+.card {
+  background: #252526;
+  /* v6.0: 去掉卡片外侧描边(方案 B)——分块只靠底色差与间距,不再画线 */
+  border-radius: 5px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background: #2d2d30;
+  font-weight: 600;
+  font-size: 12px;
+}
+.card-head .chips { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.card-body { padding: 8px 10px; line-height: 1.7; }
+
+.chip {
+  font-size: 11px;
+  font-weight: 400;
+  padding: 2px 10px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+/* v4.9 徽标配色(用户最终选定):
+   红/黄(风险/注意)保持 v4.8 之前的深底彩字柔和方案;
+   绿(正常)用灰底灰边绿字,与卡片头背景融合 */
+.chip.ok   { background: #3a3a3a; color: #4ec98a; border: 1px solid #555; }
+.chip.warn { background: #4a3a14; color: #e8b93e; border: 1px solid #6b5518; }
+.chip.bad  { background: #4a1d1a; color: #f06a55; border: 1px solid #6e2a22; }
+
+table.kv { width: 100%; border-collapse: collapse; }
+/* v7.5: 去掉画板行的横向分割线(雪糕要求)。
+   table.kv 全站仅"画板·出血·色彩"卡使用,故本改动只影响卡 1;
+   行之间原先靠 1px #333 分隔,现改为纯留白分层 —— 与 v6.0"六卡不用描边、靠底色差分块"一致。
+   注: 出血/色彩模式本就是独立的 <div>,不参与本规则。 */
+table.kv td {
+  padding: 3px 6px;
+  vertical-align: top;
+}
+table.kv td:first-child { color: #999; white-space: nowrap; width: 40%; }
+
+.mono { font-family: Consolas, "Courier New", monospace; font-size: 11px; }
+.dim { color: #888; }
+/* v5.4: 正文达标/正常文案统一白色(原绿高亮);徽标/成功提示条仍保留绿色 */
+.good { color: #e6e6e6; }
+/* v5.3: 达标/正常文案用白色(不再绿高亮) */
+.white { color: #e6e6e6; }
+.warn-t { color: #e8b93e; }
+.bad-t { color: #f06a55; }
+
+ul.list { list-style: none; margin-top: 4px; }
+/* v7.3: 清单样本行去深灰底色块 + 文字统一灰 #bbb。
+   此前每行一块深灰砖(#1e1e1e)+ 行距 3px + 圆角,视觉偏重;现融进卡底色,
+   仅留 1px 行距、左内边距归零(v7.4 起改为缩进 12px,见下)。灰阶取 #bbb:与正文白 #e6e6e6、提示灰 #888
+   形成三层分明;显式色标记(⚠ .warn-tri / .bad-t / .warn-t)为独立 span,不受影响。
+   ⚠ ul.list 为全站 6 张卡共用 —— 本改动同时作用于所有卡的清单,不只油墨卡。
+   v7.4: 样本行左侧缩进 12px,让样本在视觉上"降一级"、归到其块标题之下。
+   缩进用 padding-left(非 text-indent),这样每行整体右移、等宽字下 "=" 列对齐不受影响;
+   代价是内容区变窄约 3%,超长行会比 v7.3 更早出现省略号。 */
+ul.list li {
+  padding: 2px 0 2px 12px;
+  background: transparent;
+  border-radius: 0;
+  margin-bottom: 1px;
+  color: #bbb;
+  word-break: break-all;
+  font-family: Consolas, monospace;
+  font-size: 11px;
+}
+/* v5.0: 单行省略(超长文件名/路径,完整名在 title 悬停显示)
+   通用类,可用于 li / div / span;放在 li 内部元素上时同样生效 */
+.trunc {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
+}
+ul.list li .trunc { max-width: 100%; display: block; }
+
+.section-sub { color: #999; margin: 6px 0 2px; font-size: 11px; }
+
+/* v6.2: 油墨卡按"问题类型"分块(方案 B)——块标题统一样式 */
+/* v6.4: 块标题改"数字染色"——标题文字取常规色(继承正文 #e6e6e6),只有计数 N 用
+   .warn-t/.bad-t 上黄/红,与全站"只给数字上色"的规则一致。
+   ⚠ 不要给块标题内的 b 元素设 color: 其特异性 (0,1,1) 会盖掉 .warn-t/.bad-t (0,1,0),
+   数字会被染回标题色 —— v6.3 加的那条继承规则已按此删除。 */
+.ink-block { margin-top: 7px; font-size: 12px; font-weight: 600; display: flex; align-items: baseline; gap: 8px; }
+.ink-block:first-child { margin-top: 0; }
+/* 正常计数改灰——原白色(#e6e6e6)在深底上比红/黄更亮,视觉权重与严重度相反 */
+.ink-n { color: #999; }
+/* v7.6: 色值串里"值 1~4"的过浅分量标白 —— 一眼看出是哪一个色版太浅。
+   只改颜色,不加粗/不换字体,避免影响等宽定宽对齐。 */
+.ink-w { color: #ffffff; }
+.ink-rest { margin-top: 8px; color: #999; font-size: 11px; }
+
+/* v7.0: 样本截断提示与所在标题行同一行、右对齐(不带括号;总数已在标题里)。
+   .row-head 用于普通标题行;.ink-block 自身也是 flex,故 .row-t/.row-h 不嵌套选择器。 */
+.row-head { display: flex; align-items: baseline; gap: 8px; }
+.row-t { flex: 1 1 auto; min-width: 0; }
+.row-h { flex: 0 0 auto; margin-left: auto; color: #888; font-size: 11px; font-weight: 400; white-space: nowrap; }
+
+.foot {
+  padding: 8px 12px 12px;
+  color: #666;
+  font-size: 10px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+.foot .fname { display: block; color: #e6e6e6; font-size: 11px; }
+.foot .fpath { display: block; color: #808080; margin-top: 2px; }
+.foot .fbuild { display: block; color: #555; margin-top: 2px; }
+
+.hidden { display: none; }
