@@ -12,7 +12,11 @@ echo       from : %~dp0
 echo       to   : %DEST%
 echo.
 if not exist "%DEST%" mkdir "%DEST%"
-xcopy "%~dp0*" "%DEST%\" /E /I /Y /Q >nul
+xcopy "%~dp0CSXS" "%DEST%\CSXS" /E /I /Y /Q >nul
+xcopy "%~dp0css"  "%DEST%\css"  /E /I /Y /Q >nul
+xcopy "%~dp0js"   "%DEST%\js"   /E /I /Y /Q >nul
+xcopy "%~dp0jsx"  "%DEST%\jsx"  /E /I /Y /Q >nul
+xcopy "%~dp0index.html" "%DEST%\" /E /I /Y /Q >nul
 if errorlevel 1 set "FAIL=1"
 if not exist "%DEST%\CSXS\manifest.xml" set "FAIL=1"
 if not exist "%DEST%\js\main.js" set "FAIL=1"
@@ -22,8 +26,12 @@ if not defined FAIL echo       OK - files copied.
 
 echo.
 echo [2/3] Enable CEP debug mode (required for unsigned extensions)
+set "REGFAIL="
 for /l %%V in (9,1,14) do reg add "HKCU\Software\Adobe\CSXS.%%V" /v PlayerDebugMode /t REG_SZ /d 1 /f >nul 2>&1
-echo       OK - PlayerDebugMode set to 1 for CSXS 9 to 14.
+if errorlevel 1 set "REGFAIL=1"
+if defined REGFAIL echo       WARN - could not write PlayerDebugMode.
+if defined REGFAIL echo              FIX: run as administrator, or add it in regedit by hand.
+if not defined REGFAIL echo       OK - PlayerDebugMode set to 1 for CSXS 9 to 14.
 
 echo.
 echo [3/3] Done.
@@ -33,6 +41,7 @@ echo          Menu: Window -^> Extensions -^> the preflight panel
 echo.
 
 if not defined FAIL echo All done. You can close this window.
+if not defined FAIL if defined REGFAIL echo NOTE: files copied, but the registry switch FAILED - see [2/3] above.
 if defined FAIL echo ------------------------------------------------------------
 if defined FAIL echo   TROUBLESHOOTING
 if defined FAIL echo   1. Extract the ZIP first, then run this file from the
