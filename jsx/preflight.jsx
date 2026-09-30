@@ -103,7 +103,7 @@ function pfStringify(value) {
 // 版本一致 → 跳过 $.evalFile 直接调用函数(省掉每次重载 28KB 脚本);
 // 不一致/不存在 → 强制重载一次。这样开发期改完 JSX 无需重启 AI。
 // v7.2: 仅随版本号递增(本版为面板文案一致化,检测逻辑与返回结构零改动)。
-var PF_BUILD = "8.6";
+var PF_BUILD = "9.4";
 
 var PT2MM = 0.3527777778;     // 1 pt = 0.3528 mm
 var MAX_SCAN = 3000;          // 每类对象最多扫描数量(防大卡死)
@@ -145,7 +145,11 @@ function pfInkSum(c) {
     try { sn = c.spot.name; } catch (e2) {}
     return { total: -1, type: "spot", desc: "专色 " + sn };
   }
-  // GradientColor / PatternColor / NoColor 等不判断
+  // v8.8: 渐变 / 图案没有单一油墨总量可判 ⇒ 归入"未判断"(前端单列)，
+  //   旧实现直接 return null 被静默丢弃，汇总行的分类计数与对象总数对不上。
+  //   NoColor(无填充 / 无描边)本就不产生油墨，仍返 null 不计数。
+  if (tn === "GradientColor") return { total: -1, type: "other", desc: "渐变" };
+  if (tn === "PatternColor") return { total: -1, type: "other", desc: "图案" };
   return null;
 }
 
@@ -203,12 +207,20 @@ function pfCharOvpStroke(ca) {
 }
 // v8.3: 叠印样本的色值说明——复用 pfInkSum 的 desc(CMYK 四色 / K 灰 / RGB / 专色),
 //   拿不到就退化成 typename(如 PatternColor),再不行给 "(无)"。
-function pfOvpDesc(c) {
-  if (!c) return "(无)";
-  try { var o = pfInkSum(c); if (o && o.desc) return o.desc; } catch (e) {}
-  try { if (c.typename) return String(c.typename); } catch (e2) {}
-  return "(无)";
+// v9.4: 顺带给出 white —— 白色叠印是最典型的印刷事故(白墨叠印后不再遮挡下层,印出来会花),
+//   要在卡片右上角单挂一个"白叠印 N 处"。判定只认**能确证的纸白**:CMYK/Gray 四分量和为 0、
+//   或 RGB(255,255,255);专色 / 渐变 / 图案一律不算(与叠印读取同口径:宁可不报,绝不误报)。
+function pfOvpInfo(c) {
+  var o = null;
+  try { o = pfInkSum(c); } catch (e) {}
+  var desc = (o && o.desc) ? o.desc : "(无)";
+  if (!o) { try { if (c && c.typename) desc = String(c.typename); } catch (e2) {} }
+  var white = !!(o && ((o.type === "cmyk" && o.total === 0) ||
+                       (o.type === "rgb" && o.desc === "RGB(255,255,255)")));
+  return { desc: desc, white: white };
 }
+// 兼容旧调用(只要色值说明)
+function pfOvpDesc(c) { return pfOvpInfo(c).desc; }
 
 // v7.8: 采样池——同一个"值"只占 1 条,条数上限 cap;同值再出现时只累加它的 n。
 //   为什么:前端拿到 5 条原始样本后会把重复的合并成一行并加 " ×n",
@@ -261,13 +273,24 @@ function pfUtf8Bytes(str) {
       bytes.push(0xE0 | (c >> 12));
       bytes.push(0x80 | ((c >> 6) & 0x3F));
       bytes.push(0x80 | (c & 0x3F));
+    } else if (c <= 0xDBFF) {
+      // v8.8: 高代理 —— 只有紧跟低代理才组成码位。孤立时(含出现在串尾)旧实现会读到
+      //   charCodeAt 越界返回的 NaN，编出 F0 80 80 80(超长编码 U+0000) ⇒ 落进 JSON
+      //   就是**裸控制字符** ⇒ 前端 JSON.parse 拒收 ⇒ 整轮结果作废。现替换为 U+FFFD。
+      var c2 = (i + 1 < str.length) ? str.charCodeAt(i + 1) : -1;
+      if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
+        i++;
+        var cp = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
+        bytes.push(0xF0 | (cp >> 18));
+        bytes.push(0x80 | ((cp >> 12) & 0x3F));
+        bytes.push(0x80 | ((cp >> 6) & 0x3F));
+        bytes.push(0x80 | (cp & 0x3F));
+      } else {
+        bytes.push(0xEF); bytes.push(0xBF); bytes.push(0xBD);
+      }
     } else {
-      var c2 = str.charCodeAt(++i);
-      var cp = 0x10000 + ((c - 0xD800) << 10) + (c2 - 0xDC00);
-      bytes.push(0xF0 | (cp >> 18));
-      bytes.push(0x80 | ((cp >> 12) & 0x3F));
-      bytes.push(0x80 | ((cp >> 6) & 0x3F));
-      bytes.push(0x80 | (cp & 0x3F));
+      // v8.8: 孤立低代理(0xDC00~0xDFFF) 同样无法表示，一并替换为 U+FFFD
+      bytes.push(0xEF); bytes.push(0xBF); bytes.push(0xBD);
     }
   }
   return bytes;
@@ -449,7 +472,10 @@ function pfDocKey() {
     if (app.documents.length === 0) { res.key = "(无文档)"; res.ok = true; return pfReturn(res); }
     var doc = app.activeDocument;
     var p = "";
-    try { p = doc.path.fsName; } catch (e) { p = "(未保存)"; }
+    // v8.7: 哨兵必须与 runPreflight 的 res.docPath 逐字一致 —— 前端指纹是 docName|path,
+    //   两处哨兵不同(旧: 这里 "(未保存)" vs 那边 "(文档尚未保存)")会让"新建未另存"的文档
+    //   在面板每次获得焦点时都误判成"用户切换了文档", 从而全量重扫一遍。
+    try { p = doc.path.fsName; } catch (e) { p = "(文档尚未保存)"; }
     res.key = doc.name + "|" + p;
     res.ok = true;
   } catch (err) { res.error = String(err); }
@@ -580,7 +606,7 @@ function runPreflight() {
     // ============================================================
 
     // ---------- 字体 + 油墨 数据结构 ----------
-    var fonts = { totalText: 0, outlined: false, names: [], truncated: false, missingFonts: [] };
+    var fonts = { totalText: 0, outlined: false, names: [], truncated: false, missingFonts: [], mixedFonts: 0 };
     // v5.15: 极小字号(<6pt)统计,样本带文字内容
     // v6.8: badCount = 其中 <5pt 的重度计数,嵌套在 count 之内
     var tiny = { count: 0, badCount: 0, samples: [] };
@@ -592,12 +618,15 @@ function runPreflight() {
     //   badSamples/warnSamples: [{name, where, desc, total}]
     //   thinSamples: [{mm, name}]   light.samples: [{src, where, desc, name}]
     var black = {
-      text: { ok: 0, warn: 0, bad: 0, rgb: 0, spot: 0, mixed: 0, warnSamples: [], badSamples: [] },
-      path: { ok: 0, warn: 0, bad: 0, rgb: 0, spot: 0, warnSamples: [], badSamples: [], truncated: false,
+      // v8.8: 两边的键必须**对称** —— 前端按 bt.mixed + bp.mixed 求和，path 侧少一个键
+      //   就会算出 NaN、而 if(NaN) 恒假 ⇒ 卡6「混合色」静默不显示(自上线起从未生效)。
+      //   other = 渐变/图案(无法用单一油墨总量描述)，单列以使分类计数与对象总数一致。
+      text: { ok: 0, warn: 0, bad: 0, rgb: 0, spot: 0, mixed: 0, other: 0, warnSamples: [], badSamples: [] },
+      path: { ok: 0, warn: 0, bad: 0, rgb: 0, spot: 0, mixed: 0, other: 0, warnSamples: [], badSamples: [], truncated: false,
               thin: 0, thinSamples: [] },   // 描边过细(仅图形)
       light: { count: 0, samples: [] },     // 色值极浅(文字+图形)
       // v8.3: 叠印——文字(字符级) + 图形(pageItem 级) 共用一个池,count 为全量真值
-      overprint: { count: 0, samples: [] }
+      overprint: { count: 0, white: 0, text: 0, path: 0, samples: [] }
     };
 
     // 按阈值归类,并记录样本(v5.6/B2: 文字/路径各自独立)
@@ -623,16 +652,23 @@ function runPreflight() {
         stat.spot++;
       } else if (cls.type === "mixed") {
         stat.mixed++;
+      } else if (cls.type === "other") {
+        stat.other++;   // v8.8: 渐变/图案 —— 不判油墨但也不丢，否则汇总行与对象数对不上
       }
     }
 
     // v8.3: 叠印采样——文字/图形共用一个池,按"来源+填充/描边+色值+名称"去重(同值 ×n)。
     //   与 light 池同款:count 是文档全量真值,SAMPLE_CAP 只截采样池条数。
-    function pfOvpAdd(src, where, desc, name) {
+    // v9.4: 参数由"已算好的 desc"改为**色对象** —— 一次 pfOvpInfo 同时拿到 desc 与 white,
+    //   避免为判白再回读一遍颜色。样本多带一个 white 字段供前端使用(去重键不含它)。
+    function pfOvpAdd(src, where, colorObj, name) {
+      var info = pfOvpInfo(colorObj);
       black.overprint.count++;
+      if (info.white) black.overprint.white++;
+      if (src === "text") black.overprint.text++; else black.overprint.path++;
       pfSampleAdd(black.overprint.samples,
-        { src: src, where: where, desc: desc, name: name },
-        src + "|" + where + "|" + desc + "|" + name, SAMPLE_CAP);
+        { src: src, where: where, desc: info.desc, name: name, white: info.white },
+        src + "|" + where + "|" + info.desc + "|" + name, SAMPLE_CAP);
     }
 
     function scanPathInk(pi) {
@@ -653,12 +689,12 @@ function runPreflight() {
       // v8.3: 叠印检查(图形侧,pageItem 级)——真机 28.0.0 上 PathItem 的这两个属性名尚未验证,
       //   读不到 / 抛异常由 pfOvp* 兜成 false(宁可不报,绝不误报);色值只在命中时才读,摊薄成本。
       // v8.6: 复用上面已读出的 fc / sc, 不再回读 pi.fillColor / pi.strokeColor
-      try { if (pfOvpFill(pi))   pfOvpAdd("path", "填充", pfOvpDesc(fc), nm); } catch (e8) {}
+      try { if (pfOvpFill(pi))   pfOvpAdd("path", "填充", fc, nm); } catch (e8) {}
       try {
         if (pfOvpStroke(pi)) {
           var scO = sc;   // 未描边时 sc 为 null, 此时才补读一次
           if (!scO) { try { scO = pi.strokeColor; } catch (eScO) {} }
-          pfOvpAdd("path", "描边", pfOvpDesc(scO), nm);
+          pfOvpAdd("path", "描边", scO, nm);
         }
       } catch (e9) {}
       // v6.2: 描边过细——已描边且实测宽 <0.1mm(0.005mm 容差,防恰好 0.1mm 误报)
@@ -703,7 +739,7 @@ function runPreflight() {
 
     // v4.8: Symbol 内部扫描统计(符号内可能含未转曲文字/低清图/油墨超标/RGB,
     // 旧版直接跳过导致漏检;下钻定义源后其内部对象进入统一树遍历)
-    var symbols = { count: 0, scanned: 0 };
+    var symbols = { count: 0, scanned: 0, truncated: false };
 
     // 有效 PPI = 72 / 矩阵基向量模长(与旋转/斜切角度无关)
     var RESO_MIN = 300;
@@ -865,7 +901,12 @@ function runPreflight() {
         try { ca = it.textRange.characterAttributes; } catch (eCa) { ca = null; }
         var fn = "";
         try { fn = ca.textFont.name; }
-        catch (e3) { fn = "(混合字体)"; }
+        catch (e3) {
+          // v8.8: 混合字体帧(或字体名读不出)无法判缺。旧实现在这里整帧放行、一声不响，
+          //   而"一帧里已装字体 + 缺失字体混排"是最常见的真实漏报场景 ⇒ 至少计数上报。
+          fn = "(混合字体)";
+          fonts.mixedFonts++;
+        }
         if (fn && !seen[fn]) { seen[fn] = true; fonts.names.push(fn); }
         // v8.6: 片段只取一次 —— pfSnippet 是一次跨桥读(contents)+正则, 原来本帧最多被调
         //   4 次(极小字号/油墨入桶/极浅样本/叠印样本); 而"油墨入桶"那条是无条件执行的,
@@ -905,11 +946,11 @@ function runPreflight() {
         try {
           var ovf = pfCharOvpFill(ca), ovs = pfCharOvpStroke(ca);
           if (ovf || ovs) {
-            if (ovf) pfOvpAdd("text", "填充", pfOvpDesc(fcTx), snip);
+            if (ovf) pfOvpAdd("text", "填充", fcTx, snip);
             if (ovs) {
               // v8.6: 描边色只在真的命中叠印描边时才读(多数帧不描边, 这一读可省)
               var scTx = null; try { scTx = ca.strokeColor; } catch (eSc) {}
-              pfOvpAdd("text", "描边", pfOvpDesc(scTx), snip);
+              pfOvpAdd("text", "描边", scTx, snip);
             }
           }
         } catch (eOvp) {}
@@ -929,16 +970,20 @@ function runPreflight() {
       }
       if (tn === "MeshItem") {
         bleedOf(it, false); // v5.25: 出血先于配额(配额只截断统计,不截断出血测量)
-        if (!underQuota("mesh")) return;
+        // v8.8: 网格对象只测出血、本来就没有自己的统计桶 ⇒ 这里没有可标记的 truncated，
+        //   配额只起限速作用(与 SymbolItem 不同，那边是真把数字少算了)。
+        underQuota("mesh");
         return;
       }
       if (tn === "SymbolItem") {
         bleedOf(it, false); // v5.25: 出血先于配额(配额只截断统计,不截断出血测量)
-        if (!underQuota("symbol")) return;
+        // v8.8: 计数移到配额判断**之前** —— 原顺序在超配额后连"符号 N 个"这个数字本身
+        //   也停止累加，面板数字被静默少算且无任何提示。配额只该截断"下钻扫描"。
+        symbols.count++;
+        if (!underQuota("symbol")) { symbols.truncated = true; return; }
         // v4.8: 下钻 Symbol 定义源,扫描内部对象(缺失字体/分辨率/油墨等)
         // 多个实例引用同一符号时会重复扫描(与"实际输出内容"口径一致);
         // 定义源不可访问时静默跳过,仅统计数量
-        symbols.count++;
         try {
           var symDef = null;
           try { symDef = it.symbol; } catch (eSD) {}
@@ -1170,6 +1215,62 @@ function pfClearBlock(node, reason) {
     }
   } catch (e) {}
   return false;
+}
+
+// ============================================================
+// v9.4 一键清除叠印(雪糕点名的新功能): 把文档里**全部**叠印关掉 —— 文字(字符级)
+//   与图形(pageItem 级)、填充与描边都算,口径与检查端完全一致。
+//   ⚠ 与转曲不同: **不解除任何锁定/隐藏** —— 阻挡的对象直接跳过并计数,如实回报。
+//     理由: 清叠印是个"顺手清理"的动作,不该顺手改动用户的图层/对象状态。
+//   ⚠ 真机未验证(见 v9.4 交付说明): 能自证的只有 mock 下的读写与计数。
+// ============================================================
+function pfClearOverprint() {
+  var res = { ok: false };
+  try {
+    if (app.documents.length === 0) { res.error = "当前没有打开的文档。"; return pfReturn(res); }
+    var doc = app.activeDocument;
+    var cleared = 0, skipped = 0, failed = 0;
+
+    // 1) 文字: 帧级读法(与检查端同一个 characterAttributes,粒度一致)
+    var tfs = doc.textFrames;
+    for (var i = tfs.length - 1; i >= 0; i--) {
+      var tf = tfs[i];
+      if (pfBlockInfo(tf)) { skipped++; continue; }
+      try {
+        var ca = tf.textRange.characterAttributes;
+        if (pfCharOvpFill(ca) || pfCharOvpStroke(ca)) {
+          ca.overprintFill = false;
+          ca.overprintStroke = false;
+          cleared++;
+        }
+      } catch (eT) { failed++; }
+    }
+
+    // 2) 图形: PathItem 与 CompoundPathItem 各一遍(两个集合互不重复;
+    //    即便某个内层路径被两处扫到,第一次置 false 后第二次已读不到 true ⇒ 不会重复计数)
+    function pfClrPath(pi) {
+      if (pfBlockInfo(pi)) { skipped++; return; }
+      try {
+        if (pfOvpFill(pi) || pfOvpStroke(pi)) {
+          pi.fillOverprint = false;
+          pi.strokeOverprint = false;
+          cleared++;
+        }
+      } catch (eP) { failed++; }
+    }
+    try { var ps = doc.pathItems; for (var j = ps.length - 1; j >= 0; j--) pfClrPath(ps[j]); } catch (ePS) {}
+    try { var cps = doc.compoundPathItems; for (var k = cps.length - 1; k >= 0; k--) pfClrPath(cps[k]); } catch (eCPS) {}
+
+    res.ok = true;
+    res.cleared = cleared; res.skipped = skipped; res.failed = failed;
+    res.message = (cleared > 0 ? "已清除叠印 " + cleared + " 处" : "未发现可清除的叠印") +
+      (skipped > 0 ? "，跳过 " + skipped + " 处(锁定/隐藏，状态未改动)" : "") +
+      (failed > 0 ? "，失败 " + failed + " 处" : "") + "。";
+  } catch (err) {
+    res.ok = false;
+    res.error = "清除叠印失败: " + String(err);
+  }
+  return pfReturn(res);
 }
 
 // ============================================================

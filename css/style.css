@@ -5,7 +5,10 @@ html, body { height: 100%; }
 body {
   font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
   font-size: 12px;
-  background: #1e1e1e;
+  /* v8.9: 三处底色依参考图重配 ——
+     页/面板底 #1e1e1e -> #151517、卡片底 #252526 -> #1b1b1c、卡片头 #2d2d30 -> #2c2c2e。
+     顶部栏与滚动条共用同一批色值,一并跟随(否则会出现明显色差层)。 */
+  background: #151517;
   color: #e6e6e6;
   overflow-x: hidden;
   overflow-y: auto;
@@ -14,17 +17,17 @@ body {
 
 /* 深色滚动条 */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: #1e1e1e; }
-::-webkit-scrollbar-thumb { background: #4a4a4a; border-radius: 5px; border: 2px solid #1e1e1e; }
+::-webkit-scrollbar-track { background: #151517; }
+::-webkit-scrollbar-thumb { background: #4a4a4a; border-radius: 5px; border: 2px solid #151517; }
 ::-webkit-scrollbar-thumb:hover { background: #5a5a5a; }
-::-webkit-scrollbar-corner { background: #1e1e1e; }
+::-webkit-scrollbar-corner { background: #151517; }
 
 .topbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 10px 12px;
-  background: #252526;
+  background: #1b1b1c;
   border-bottom: 1px solid #3a3a3a;
   position: sticky;
   top: 0;
@@ -38,7 +41,7 @@ body {
   background: #0e639c;
   color: #fff;
   border: none;
-  border-radius: 4px;
+  border-radius: 999px; /* v9.0: 方案 C —— 三族按钮统一胶囊 */
   /* v6.1: 左右内边距 20px→30px,"开始检查"按钮加宽约 20% */
   padding: 9px 30px;
   font-size: 14px;
@@ -53,7 +56,7 @@ body {
   background: #d33;
   color: #fff;
   border: none;
-  border-radius: 4px;
+  border-radius: 999px; /* v9.0: 方案 C —— 三族按钮统一胶囊 */
   padding: 10px 20px;
   font-size: 14px;
   font-weight: 600;
@@ -71,9 +74,9 @@ body {
   align-items: center;
   gap: 14px;
   margin-bottom: 8px;
-  padding: 6px 8px;
-  background: #1e1e1e;
-  border-radius: 4px;
+  /* v9.0: 依雪糕要求去掉底色块。同批把 6px 8px 的内边距归零 —— 底色一去, 那 8px 左缩进
+     就会让两个复选框比卡内其它文字多缩 8px, 看着像没对齐。 */
+  padding: 0;
 }
 label.chk {
   display: inline-flex;
@@ -91,25 +94,20 @@ label.chk input[type="checkbox"] {
   cursor: pointer;
 }
 
-/* 缺失字体条目的橙色三角感叹号 */
-.missing-font .warn-tri {
-  color: #f0a040;
-  font-size: 14px;
-  font-weight: 700;
-  margin-right: 4px;
-  vertical-align: -1px;
-  display: inline-block;
-  transform: scale(1.1);
-}
+/* v9.0: 依雪糕要求删掉「缺失字体」清单前的橙色 ⚠ —— 该清单每行都是缺失项, 标记冗余;
+   且卡④ 缺失链接那处的同类标记用的是别的选择器(从来就没吃到过本规则), 所以直接删规则,
+   不做 display:none 之类的保留。日后若要加回, 需同时恢复 main.js 里那段 span。 */
 
 .loading { padding: 20px; text-align: center; color: #4fc1ff; }
 .error {
   margin: 10px 12px;
   padding: 12px 14px;
   background: #1f1f1f;
-  border: 1px solid #6e2a22;
-  border-left: 4px solid #be1100;
-  border-radius: 4px;
+  /* v9.2: 依雪糕要求去掉左侧那条 4px 竖条, 外层描边 1px -> 2px 补回一点分量。
+     ⚠ 代价: 成功 / 失败从此只能靠"描边色 + 文字色"区分(原来那根竖条是最强的视觉标识),
+     所以描边别再改细, 否则两条提示会越看越像。 */
+  border: 2px solid #6e2a22;
+  border-radius: 12px;
   color: #f48771;
   font-size: 14px;
   line-height: 1.6;
@@ -119,9 +117,9 @@ label.chk input[type="checkbox"] {
   margin: 10px 12px;
   padding: 12px 14px;
   background: #1f1f1f;
-  border: 1px solid #2e5c40;
-  border-left: 4px solid #2e8a55;
-  border-radius: 4px;
+  /* v9.2: 同 .error —— 去左侧竖条, 外层描边 1px -> 2px */
+  border: 2px solid #2e5c40;
+  border-radius: 12px;
   color: #4ec98a;
   font-size: 14px;
   line-height: 1.6;
@@ -137,9 +135,10 @@ label.chk input[type="checkbox"] {
   justify-content: center;
 }
 .modal {
-  background: #1e1e1e;
+  background: #151517;
   border: 1px solid #4a4a4a;
-  border-radius: 8px;
+  /* v9.1: 弹窗 8px -> 12px, 与卡片 / 提示条对齐(方案 C 收尾) */
+  border-radius: 12px;
   padding: 18px 20px;
   min-width: 280px;
   max-width: 86%;
@@ -166,7 +165,7 @@ label.chk input[type="checkbox"] {
 }
 .modal-btn {
   border: none;
-  border-radius: 5px;
+  border-radius: 999px; /* v9.0: 方案 C —— 三族按钮统一胶囊 */
   cursor: pointer;
   padding: 10px 28px;
   font-size: 15px;
@@ -180,9 +179,10 @@ label.chk input[type="checkbox"] {
 .results { padding: 10px 10px 4px; }
 
 .card {
-  background: #252526;
+  background: #1b1b1c;
   /* v6.0: 去掉卡片外侧描边(方案 B)——分块只靠底色差与间距,不再画线 */
-  border-radius: 5px;
+  /* v9.0: 卡片圆角 5px -> 12px(方案 C「全面胶囊」) */
+  border-radius: 12px;
   margin-bottom: 10px;
   overflow: hidden;
 }
@@ -191,7 +191,7 @@ label.chk input[type="checkbox"] {
   align-items: center;
   justify-content: space-between;
   padding: 8px 10px;
-  background: #2d2d30;
+  background: #2c2c2e;
   font-weight: 600;
   font-size: 12px;
 }
@@ -207,8 +207,10 @@ label.chk input[type="checkbox"] {
 }
 /* v4.9 徽标配色(用户最终选定):
    红/黄(风险/注意)保持 v4.8 之前的深底彩字柔和方案;
-   绿(正常)用灰底灰边绿字,与卡片头背景融合 */
-.chip.ok   { background: #3a3a3a; color: #4ec98a; border: 1px solid #555; }
+   绿(正常)用灰底灰边绿字,与卡片头背景融合
+   v8.9: 依雪糕要求,绿徽标改为"只留描边、底色透明" —— 透明即自然透出卡片头底色,
+     比硬填一个色值更贴合(卡头/页面若再调色也自动跟随)。红/黄徽标配色不动。 */
+.chip.ok   { background: transparent; color: #4ec98a; border: 1px solid #555; }
 .chip.warn { background: #4a3a14; color: #e8b93e; border: 1px solid #6b5518; }
 .chip.bad  { background: #4a1d1a; color: #f06a55; border: 1px solid #6e2a22; }
 
@@ -220,6 +222,11 @@ table.kv { width: 100%; border-collapse: collapse; }
 table.kv td {
   padding: 3px 6px;
   vertical-align: top;
+  /* v9.3: 依雪糕要求, 样本行行距与卡③④⑤⑥ 清单统一为 24px。
+     算术: 行盒 18px + 上下内边距 3px x 2 = 24.0。
+     只动行盒就够了 —— 行盒不参与换行宽度计算, 所以列宽 / nowrap / 省略号都不受影响;
+     反过来内边距 3px 或字号 12px 一动就破 24, 改前先按上面这条算术复算。 */
+  line-height: 18px;
 }
 table.kv td:first-child { color: #999; white-space: nowrap; width: 40%; }
 
@@ -250,6 +257,12 @@ ul.list li {
   word-break: break-all;
   font-family: Consolas, monospace;
   font-size: 11px;
+  /* v9.3: 依雪糕要求, 样本行行距统一 24px(与卡① 画板表对齐)。
+     算术: 行盒 19px + 上下内边距 2px x 2 + 外边距 1px = 24.0。
+     行盒不参与换行宽度计算 ⇒ 卡④⑤ 的省略号位置、卡⑥ 的 "=" 等宽列对齐全不受影响;
+     但 2px 内边距 / 1px 外边距 / 11px 字号一动就破 24。
+     中英墨迹高差(中文填满行盒、拉丁只占中段)属字体度量, 本改动抹不平, 不必反复试。 */
+  line-height: 19px;
 }
 /* v5.0: 单行省略(超长文件名/路径,完整名在 title 悬停显示)
    通用类,可用于 li / div / span;放在 li 内部元素上时同样生效 */

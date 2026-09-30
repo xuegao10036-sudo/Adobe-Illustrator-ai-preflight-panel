@@ -2,11 +2,11 @@
 (function () {
   "use strict";
 
-  var JS_BUILD = "20260922-4";
+  var JS_BUILD = "20260929-8";
   // 必须与 jsx/preflight.jsx 里的 PF_BUILD 保持一致。
   // JSX 每次返回都会带上它的构建号,前端据此判断 ExtendScript 引擎里
   // 加载的是不是当前版本 —— 不一致就强制 $.evalFile 重载(见 execJsx)。
-  var JSX_BUILD = "8.6";
+  var JSX_BUILD = "9.4";
 
   // 全局错误捕获: 把任何未捕获异常显示到面板,便于定位"空白"问题
   window.onerror = function (msg, url, line, col) {
@@ -80,10 +80,18 @@
     } catch (e) { return null; }
   }
 
+  // v8.7: 结果缓存 —— 扩展路径在会话内不变, 而原实现每次 execJsx 都要白跑一遍
+  //   getSystemPath + decodeURI + replace; 快路径(jsxReady)上算完即丢, 每次面板
+  //   获得焦点的 pfDocKey 探针也要付这笔开销。
+  //   首次读不到(getSystemPath 抛异常 => extPath 为空串)时**不写缓存**, 留给下次重试。
+  var jsxPathCache = "";
   function jsxFilePath() {
+    if (jsxPathCache) return jsxPathCache;
     var extPath = "";
     try { extPath = decodeURI(window.__adobe_cep__.getSystemPath("extension")); } catch (e) {}
-    return (extPath + "/jsx/preflight.jsx").replace(/\\/g, "/");
+    var p = (extPath + "/jsx/preflight.jsx").replace(/\\/g, "/");
+    if (extPath) jsxPathCache = p;
+    return p;
   }
 
   // v3.1: 已确认引擎内 JSX 版本正确时,跳过 $.evalFile 直接调用函数,
@@ -142,7 +150,8 @@
   // 缺失字体列表(带橙色三角感叹号)
   function renderMissingFonts(arr) {
     var items = arr.map(function (n) {
-      return '<li class="missing-font"><span class="warn-tri">⚠</span> ' + esc(n) + "</li>";
+      // v9.0: 清单每行都是缺失项, 行首 ⚠ 属冗余, 按雪糕要求去掉(卡④ 缺失链接那处保留)
+      return "<li>" + esc(n) + "</li>";
     }).join("");
     // v5.17: 按用户要求去掉括号说明与"检测方式"灰字,只留名单
     return '<div>缺失字体 <b class="bad-t">' + arr.length + "</b> 个:</div>" +
@@ -175,7 +184,9 @@
   //   旧版超时后按钮立即恢复可点,再点会把 runPreflight() 排队再跑一遍(总耗时翻倍、
   //   两次结果先后覆盖渲染)。scanBusy 期间忽略点击,并给一句提示,免得"点了没反应"。
   var scanBusy = false;
-  function run(keepNotice) {
+  // v8.8: 加 keepError —— 一键操作失败时 execAction 先 showError 再刷新结果，
+  //   而 run() 一进来就把 #error 加 hidden ⇒ 失败原因瞬间被抹掉、用户只看到新一轮结果。
+  function run(keepNotice, keepError) {
     if (!inCEP()) {
       showError("未检测到 CEP 环境。此页面需在 Illustrator 的扩展面板中运行。");
       return;
@@ -188,6 +199,7 @@
     // v5.2: 顺带清掉残留的旧成功提示,避免绿条挂在新一轮结果上
     // v8.0: 操作后刷新时保留(keepNotice=true)
     if (!keepNotice) $("notice").classList.add("hidden");
+    if (!keepError) $("error").classList.add("hidden");
     $("results").innerHTML = "";
     $("foot").innerHTML = "";
 
@@ -258,7 +270,8 @@
       // v4.8: 符号内部扫描提示(仅当文档含符号时)
       (d.symbols && d.symbols.count > 0
         ? '<span class="fbuild">符号 ' + d.symbols.count + " 个" +
-          (d.symbols.scanned ? "(已扫描内部内容)" : "(内部不可访问)") + "</span>" : "");
+          (d.symbols.truncated ? "(仅扫描前 3000 个)"
+            : (d.symbols.scanned ? "(已扫描内部内容)" : "(内部不可访问)")) + "</span>" : "");
 
     var html = "";
 
@@ -380,6 +393,12 @@
       fHtml = parts;
       if (d.fonts.truncated) fHtml += '<div class="dim">(仅扫描前 3000 个)</div>';
     }
+    // v8.8: 混合字体帧提示 —— 这类帧(一帧里多种字体、或字体名读不出)整帧无法判缺，
+    //   旧实现一声不响。这是漏报面最大的一类，至少让用户知道有多少帧没被检查。
+    var mixF = (d.fonts && d.fonts.mixedFonts) ? d.fonts.mixedFonts : 0;
+    if (mixF > 0) fHtml += '<div class="dim">另有 <b class="warn-t">' + mixF +
+      '</b> 个文本框含多种字体(或字体名读不出)，未参与缺失字体检测。</div>';
+
     // v5.15: 极小字号,并入字体卡底部
     // v6.8: 分两级——<6pt 计数黄、其中 <5pt 计数红;徽标"有 <5pt 才红,否则黄"
     // v6.9: 有 <5pt 时总数数字一并转红(与徽标同级别);样本截断提示按用户要求删除
@@ -589,6 +608,9 @@
         var ta = map[a].s.total, tb = map[b].s.total;
         if (ta === undefined) ta = -Infinity;
         if (tb === undefined) tb = -Infinity;
+        // v8.7: 两侧都无 total 时会算出 -Infinity - (-Infinity) = NaN, 而比较器返回 NaN
+        //   属规范未定义行为(当前只是 V8 恰好把它当作 0 才保住稳定序) —— 显式返回 0。
+        if (ta === tb) return 0;
         return tb - ta;
       });
       var use = (cap && order.length > cap) ? order.slice(0, cap) : order;
@@ -632,16 +654,8 @@
       blocks += inkBlock("色版1~4%", lightN, "warn", lightN > lightOut.shown ? "仅列出前 5 处" : "");
       blocks += lightOut.html;
     }
-    // 块 4(v8.3): 叠印(红) —— 文字/图形共一池,按不同色值 ×n(与"色版1~4%"同款渲染)
-    if (ovpN > 0) {
-      var ovpRows = (ovp.samples || []).map(function (s) {
-        return { l: s.src === "text" ? "文字" : "图形", s: s };
-      });
-      var ovpOut = inkRows(ovpRows, 5);
-      blocks += inkBlock("叠印", ovpN, "bad", ovpN > ovpOut.shown ? "仅列出前 5 处" : "");
-      blocks += ovpOut.html;
-    }
-    // 块 5: 描边<0.1mm(黄,仅图形) —— 相同宽度合并为 "描边 0.09mm ×3"
+    // v9.4: 原"块 4 叠印"已拆成独立卡片(见下方"7. 叠印"), 卡片顺序保持"油墨 -> 叠印"。
+    // 块 4: 描边<0.1mm(黄,仅图形) —— 相同宽度合并为 "描边 0.09mm ×3"
     // v7.8: jsx 已按 mm 去重并带 n(全量次数);这里仍按 mm 分组(旧 jsx 兜底),计数优先取 s.n
     if (thinN > 0) {
       blocks += inkBlock("描边<0.1mm", thinN, "warn", thinN > bp.thinSamples.length ? "仅列出前 5 处" : "");
@@ -661,11 +675,15 @@
     }
 
     // 汇总行(灰):正常计数 + RGB/专色/混合色
-    var rgbN = bt.rgb + bp.rgb, spotN = bt.spot + bp.spot, mixedN = bt.mixed + bp.mixed;
+    // v8.8: 一律 ||0 —— 旧 jsx 缓存里 black.path 没有 mixed 键，直接相加得 NaN，
+    //   而 if(NaN) 恒假 ⇒ 「混合色」这段从上线起就没显示过。other = 渐变/图案。
+    var rgbN = (bt.rgb || 0) + (bp.rgb || 0), spotN = (bt.spot || 0) + (bp.spot || 0),
+        mixedN = (bt.mixed || 0) + (bp.mixed || 0), otherN = (bt.other || 0) + (bp.other || 0);
     var rest = "正常:文字 <b class='ink-n'>" + bt.ok + "</b> · 图形 <b class='ink-n'>" + bp.ok + "</b>";
     if (rgbN) rest += " · RGB <b class='warn-t'>" + rgbN + "</b>";
     if (spotN) rest += " · 专色 <b>" + spotN + "</b>";
     if (mixedN) rest += " · 混合色 <b>" + mixedN + "</b>";
+    if (otherN) rest += " · 渐变/图案 <b>" + otherN + "</b>";
     if (bp.truncated) rest += " · 仅扫描前 3000 个";
     blocks += '<div class="ink-rest">' + rest + "</div>";
     bHtml = blocks;
@@ -674,10 +692,35 @@
     var totalWarnAll = totalWarn + thinN + lightN;
     if (totalBad > 0) { bLevel = "bad"; bChip = "超标 " + totalBad + " 处"; }
     else if (totalWarnAll > 0) { bLevel = "warn"; bChip = "注意 " + totalWarnAll + " 处"; }
-    // v8.3: 叠印另走 extraChip(第 6 参),**不并入上面计数** —— 主徽标仍只管油墨/描边。
-    //   第 5 参传 null ⇒ chipLevel||level,主徽标配色与旧版完全一致。
-    var ovpChip = ovpN > 0 ? chip("bad", "有叠印") : "";
-    html += card("油墨 · 叠印 · 描边粗细", bLevel, bChip, bHtml, null, ovpChip);
+    // v9.4: 叠印已独立成卡(下一张),这里不再挂 extraChip,标题也去掉"叠印"二字
+    html += card("油墨 · 描边粗细", bLevel, bChip, bHtml);
+
+    // ===== 7. 叠印 (v9.4: 依雪糕要求从油墨卡拆出, 独立成卡) =====
+    //   ⚠ 旧 jsx(缓存里没有 white/text/path 键)一律 ||0 —— 让 undefined 参与算术会得 NaN、
+    //     而 if(NaN) 恒假 ⇒ 整段静默不显示(v8.8 的 black.path.mixed 就是这么栽的)。
+    var ovpW = ovp.white || 0, ovpTx = ovp.text || 0, ovpPth = ovp.path || 0;
+    var oHtml = "", oLevel = "ok", oChip = "无叠印";
+    if (ovpN > 0) {
+      oLevel = "bad";
+      oChip = "叠印 " + ovpN + " 处";
+      var oRows = (ovp.samples || []).map(function (s) {
+        return { l: s.src === "text" ? "文字" : "图形", s: s };
+      });
+      var oOut = inkRows(oRows, 5);
+      oHtml += rowHead("共 <b class='bad-t'>" + ovpN + "</b> 处叠印" +
+        ((ovpTx || ovpPth) ? " · 文字 <b>" + ovpTx + "</b> · 图形 <b>" + ovpPth + "</b>" : ""),
+        ovpN > oOut.shown ? "仅列出前 5 处" : "");
+      oHtml += oOut.html;
+      if (ovpW > 0) {
+        oHtml += "其中白色叠印 <b class='bad-t'>" + ovpW + "</b> 处(白色叠印后不再遮挡下层，印出来会花)。";
+      }
+      // v9.4: 有叠印才给按钮(无叠印时按一下纯属多余)
+      oHtml += '<div class="action-row"><button class="btn-action" id="btnOvpClear">一键清除叠印</button></div>';
+    } else {
+      oHtml = '文档<b class="good">无叠印</b>。';
+    }
+    // 副徽标(第 6 参): 只有真出现白色叠印才挂,文案带数量便于一眼定量
+    html += card("叠印", oLevel, oChip, oHtml, null, ovpW > 0 ? chip("bad", "白叠印 " + ovpW + " 处") : "");
 
     $("results").innerHTML = html;
 
@@ -719,7 +762,8 @@
     execJsx(jsxFns, function (data, raw) {
       clearTimeout(actTimer);
       actionBusy = false;
-      if (data && data.ok) {
+      var actFailed = !(data && data.ok);   // v8.8: 失败路径要保留错误提示(见下方 run 调用)
+      if (!actFailed) {
         // v7.1: 不再"成功词 + 详情"两句并排(原为"转曲完成。 已转曲 5 个文本框。")——
         // 有 jsx 详情就只用详情,没有才退回成功词
         showNotice(data.message || successMsg || "操作完成");
@@ -727,7 +771,7 @@
         showError((data && data.error) ? data.error
           : ("操作失败。返回: " + String(raw).substring(0, 120)));
       }
-      run(true); // v8.0: 刷新检查结果(保留本次操作的成功提示;内部会恢复按钮、隐藏 loading)
+      run(true, actFailed); // v8.8: 失败时传 keepError，避免刚弹的红条被本轮 run() 抹掉；v8.0: 刷新检查结果(保留本次操作的成功提示;内部会恢复按钮、隐藏 loading)
     });
   }
 
@@ -806,11 +850,23 @@
     });
   }
 
+  // v9.4: 一键清除叠印 —— 只关叠印属性,不动图层/对象状态;锁定与隐藏的跳过并如实报数。
+  //   ⚠ 文案没说"不可撤销": 转曲/嵌入是真的不可逆,而这个只是翻属性,撤销粒度我没验证过,
+  //     不写死。要统一成"不可撤销"随时说。
+  function onOvpClear() {
+    customConfirm("将关闭文档中全部叠印（文字与图形、填充与描边）。" +
+      "\n锁定或隐藏的对象会跳过，其显示与锁定状态一律不改动。" +
+      "\n此操作会直接修改文档，确定继续?", function () {
+      execAction("pfClearOverprint();", "清除叠印完成。");
+    });
+  }
+
   // 事件委托: 处理动态生成的按钮
   document.addEventListener("click", function (e) {
     var t = e.target;
     if (t && t.id === "btnOutline") onOutline();
     else if (t && t.id === "btnEmbed") onEmbed();
+    else if (t && t.id === "btnOvpClear") onOvpClear();
   });
 
   // ---------- 启动 ----------
