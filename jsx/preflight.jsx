@@ -103,7 +103,7 @@ function pfStringify(value) {
 // 版本一致 → 跳过 $.evalFile 直接调用函数(省掉每次重载 28KB 脚本);
 // 不一致/不存在 → 强制重载一次。这样开发期改完 JSX 无需重启 AI。
 // v7.2: 仅随版本号递增(本版为面板文案一致化,检测逻辑与返回结构零改动)。
-var PF_BUILD = "9.4";
+var PF_BUILD = "9.7";
 
 var PT2MM = 0.3527777778;     // 1 pt = 0.3528 mm
 var MAX_SCAN = 3000;          // 每类对象最多扫描数量(防大卡死)
@@ -626,7 +626,9 @@ function runPreflight() {
               thin: 0, thinSamples: [] },   // 描边过细(仅图形)
       light: { count: 0, samples: [] },     // 色值极浅(文字+图形)
       // v8.3: 叠印——文字(字符级) + 图形(pageItem 级) 共用一个池,count 为全量真值
-      overprint: { count: 0, white: 0, text: 0, path: 0, samples: [] }
+      // v9.6: locked = 其中落在**锁定**对象/图层/锁定组里的处数(照常计入 count, 只多报一个数,
+      //   供卡⑦ 提示"其中锁定 N 处, 勾选「解锁全部」可一并清除")。
+      overprint: { count: 0, white: 0, text: 0, path: 0, locked: 0, samples: [] }
     };
 
     // 按阈值归类,并记录样本(v5.6/B2: 文字/路径各自独立)
@@ -661,11 +663,20 @@ function runPreflight() {
     //   与 light 池同款:count 是文档全量真值,SAMPLE_CAP 只截采样池条数。
     // v9.4: 参数由"已算好的 desc"改为**色对象** —— 一次 pfOvpInfo 同时拿到 desc 与 white,
     //   避免为判白再回读一遍颜色。样本多带一个 white 字段供前端使用(去重键不含它)。
-    function pfOvpAdd(src, where, colorObj, name) {
+    // v9.5: 第 5 参 item —— 命中时沿 parent 链判是否被**锁定**(Ctrl+2 / 锁定组 / 锁定图层),
+    //   计入 locked。⚠只判不跳过: 锁定对象**照常统计**(与"隐藏不参与"的口径不同),
+    //   前端据此提示"其中锁定 N 处,勾选解锁全部可一并清除"。
+    //   ⚠这一判只在**命中叠印**时才跑(命中本就稀少),一次 parent 链走查对整体扫描无感。
+    function pfOvpAdd(src, where, colorObj, name, item) {
       var info = pfOvpInfo(colorObj);
       black.overprint.count++;
       if (info.white) black.overprint.white++;
       if (src === "text") black.overprint.text++; else black.overprint.path++;
+      if (item) {
+        var blkO = null;
+        try { blkO = pfBlockInfo(item); } catch (eBlkO) {}
+        if (blkO && blkO.reason === "locked") black.overprint.locked++;
+      }
       pfSampleAdd(black.overprint.samples,
         { src: src, where: where, desc: info.desc, name: name, white: info.white },
         src + "|" + where + "|" + info.desc + "|" + name, SAMPLE_CAP);
@@ -689,12 +700,12 @@ function runPreflight() {
       // v8.3: 叠印检查(图形侧,pageItem 级)——真机 28.0.0 上 PathItem 的这两个属性名尚未验证,
       //   读不到 / 抛异常由 pfOvp* 兜成 false(宁可不报,绝不误报);色值只在命中时才读,摊薄成本。
       // v8.6: 复用上面已读出的 fc / sc, 不再回读 pi.fillColor / pi.strokeColor
-      try { if (pfOvpFill(pi))   pfOvpAdd("path", "填充", fc, nm); } catch (e8) {}
+      try { if (pfOvpFill(pi))   pfOvpAdd("path", "填充", fc, nm, pi); } catch (e8) {}
       try {
         if (pfOvpStroke(pi)) {
           var scO = sc;   // 未描边时 sc 为 null, 此时才补读一次
           if (!scO) { try { scO = pi.strokeColor; } catch (eScO) {} }
-          pfOvpAdd("path", "描边", scO, nm);
+          pfOvpAdd("path", "描边", scO, nm, pi);
         }
       } catch (e9) {}
       // v6.2: 描边过细——已描边且实测宽 <0.1mm(0.005mm 容差,防恰好 0.1mm 误报)
@@ -946,11 +957,11 @@ function runPreflight() {
         try {
           var ovf = pfCharOvpFill(ca), ovs = pfCharOvpStroke(ca);
           if (ovf || ovs) {
-            if (ovf) pfOvpAdd("text", "填充", fcTx, snip);
+            if (ovf) pfOvpAdd("text", "填充", fcTx, snip, it);
             if (ovs) {
               // v8.6: 描边色只在真的命中叠印描边时才读(多数帧不描边, 这一读可省)
               var scTx = null; try { scTx = ca.strokeColor; } catch (eSc) {}
-              pfOvpAdd("text", "描边", scTx, snip);
+              pfOvpAdd("text", "描边", scTx, snip, it);
             }
           }
         } catch (eOvp) {}
@@ -1220,21 +1231,46 @@ function pfClearBlock(node, reason) {
 // ============================================================
 // v9.4 一键清除叠印(雪糕点名的新功能): 把文档里**全部**叠印关掉 —— 文字(字符级)
 //   与图形(pageItem 级)、填充与描边都算,口径与检查端完全一致。
-//   ⚠ 与转曲不同: **不解除任何锁定/隐藏** —— 阻挡的对象直接跳过并计数,如实回报。
+//   ⚠ 与转曲不同: **默认不解除任何锁定/隐藏** —— 阻挡的对象直接跳过并计数,如实回报。
 //     理由: 清叠印是个"顺手清理"的动作,不该顺手改动用户的图层/对象状态。
+//   v9.5: 新增 unlockAll 开关(叠印卡「解锁全部」复选框, 默认关) —— 为真时先解锁全部
+//     图层(含子图层)与对象级锁定(Ctrl+2)/锁定组, 这些对象的叠印一并清除;
+//     隐藏对象**始终不碰**(面板已标注"隐藏对象与图层不参与叠印检查")。
 //   ⚠ 真机未验证(见 v9.4 交付说明): 能自证的只有 mock 下的读写与计数。
 // ============================================================
-function pfClearOverprint() {
+function pfClearOverprint(unlockAll) {
   var res = { ok: false };
   try {
     if (app.documents.length === 0) { res.error = "当前没有打开的文档。"; return pfReturn(res); }
     var doc = app.activeDocument;
-    var cleared = 0, skipped = 0, failed = 0;
+    var uAll = (unlockAll === true);
+    var cleared = 0, skipped = 0, failed = 0, unlocked = 0;
+
+    // v9.5: 图层级解锁(含子图层);对象级锁定 / 锁定组由下面 pfUnlockItem 逐项解除
+    if (uAll) {
+      try {
+        var lys = doc.layers;
+        for (var li = 0; li < lys.length; li++) pfUnlockLayer(lys[li], true, false);
+      } catch (eUL) {}
+    }
+    // v9.5: 沿 parent 链解除该对象的**锁定**阻挡(含 Ctrl+2 与锁定组);隐藏一律不动。
+    //   返回解除层数;循环上限 10 与 pfOutlineAll 同款(防异常 parent 链死循环)。
+    function pfUnlockItem(item) {
+      var n = 0, g = 0, info = null;
+      try { info = pfBlockInfo(item); } catch (e0) { return 0; }
+      while (info && info.reason === "locked" && g++ < 10) {
+        if (!pfClearBlock(info.node, "locked")) break;
+        n++;
+        try { info = pfBlockInfo(item); } catch (e1) { break; }
+      }
+      return n;
+    }
 
     // 1) 文字: 帧级读法(与检查端同一个 characterAttributes,粒度一致)
     var tfs = doc.textFrames;
     for (var i = tfs.length - 1; i >= 0; i--) {
       var tf = tfs[i];
+      if (uAll) unlocked += pfUnlockItem(tf);
       if (pfBlockInfo(tf)) { skipped++; continue; }
       try {
         var ca = tf.textRange.characterAttributes;
@@ -1249,6 +1285,7 @@ function pfClearOverprint() {
     // 2) 图形: PathItem 与 CompoundPathItem 各一遍(两个集合互不重复;
     //    即便某个内层路径被两处扫到,第一次置 false 后第二次已读不到 true ⇒ 不会重复计数)
     function pfClrPath(pi) {
+      if (uAll) unlocked += pfUnlockItem(pi);
       if (pfBlockInfo(pi)) { skipped++; return; }
       try {
         if (pfOvpFill(pi) || pfOvpStroke(pi)) {
@@ -1263,7 +1300,9 @@ function pfClearOverprint() {
 
     res.ok = true;
     res.cleared = cleared; res.skipped = skipped; res.failed = failed;
+    res.unlocked = unlocked;
     res.message = (cleared > 0 ? "已清除叠印 " + cleared + " 处" : "未发现可清除的叠印") +
+      (unlocked > 0 ? "，解除锁定 " + unlocked + " 处" : "") +
       (skipped > 0 ? "，跳过 " + skipped + " 处(锁定/隐藏，状态未改动)" : "") +
       (failed > 0 ? "，失败 " + failed + " 处" : "") + "。";
   } catch (err) {

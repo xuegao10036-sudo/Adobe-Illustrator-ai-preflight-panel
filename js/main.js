@@ -2,11 +2,11 @@
 (function () {
   "use strict";
 
-  var JS_BUILD = "20260929-8";
+  var JS_BUILD = "20260930-3";
   // 必须与 jsx/preflight.jsx 里的 PF_BUILD 保持一致。
   // JSX 每次返回都会带上它的构建号,前端据此判断 ExtendScript 引擎里
   // 加载的是不是当前版本 —— 不一致就强制 $.evalFile 重载(见 execJsx)。
-  var JSX_BUILD = "9.4";
+  var JSX_BUILD = "9.7";
 
   // 全局错误捕获: 把任何未捕获异常显示到面板,便于定位"空白"问题
   window.onerror = function (msg, url, line, col) {
@@ -699,6 +699,8 @@
     //   ⚠ 旧 jsx(缓存里没有 white/text/path 键)一律 ||0 —— 让 undefined 参与算术会得 NaN、
     //     而 if(NaN) 恒假 ⇒ 整段静默不显示(v8.8 的 black.path.mixed 就是这么栽的)。
     var ovpW = ovp.white || 0, ovpTx = ovp.text || 0, ovpPth = ovp.path || 0;
+    // v9.6: 其中落在锁定对象/图层/锁定组里的处数(旧 jsx 无此键 ⇒ ||0, 否则 if(undefined>0) 恒假、静默不显示)
+    var ovpLocked = ovp.locked || 0;
     var oHtml = "", oLevel = "ok", oChip = "无叠印";
     if (ovpN > 0) {
       oLevel = "bad";
@@ -707,20 +709,36 @@
         return { l: s.src === "text" ? "文字" : "图形", s: s };
       });
       var oOut = inkRows(oRows, 5);
+      // v9.7: 叠印汇总 —— 锁定 / 白色一并进标题行(原先各占一行: 一行灰字 + 一行正文),
+      //   两段解释改挂 title 悬停提示 ⇒ 卡片净省 2 行, 且数字集中在一处更好对账。
       oHtml += rowHead("共 <b class='bad-t'>" + ovpN + "</b> 处叠印" +
-        ((ovpTx || ovpPth) ? " · 文字 <b>" + ovpTx + "</b> · 图形 <b>" + ovpPth + "</b>" : ""),
+        ((ovpTx || ovpPth) ? " · 文字 <b>" + ovpTx + "</b> · 图形 <b>" + ovpPth + "</b>" : "") +
+        (ovpLocked > 0 ? ' · <span title="清除叠印时锁定对象默认跳过；勾选「解锁全部」可一并清除">锁定 <b class="warn-t">' + ovpLocked + "</b></span>" : "") +
+        (ovpW > 0 ? ' · <span title="白色叠印后不再遮挡下层，印出来会花">白色 <b class="bad-t">' + ovpW + "</b></span>" : ""),
         ovpN > oOut.shown ? "仅列出前 5 处" : "");
       oHtml += oOut.html;
-      if (ovpW > 0) {
-        oHtml += "其中白色叠印 <b class='bad-t'>" + ovpW + "</b> 处(白色叠印后不再遮挡下层，印出来会花)。";
-      }
+      // v9.7: 「其中白色叠印 N 处(…印出来会花)。」整行删除 —— 白色已并入上方标题行,
+      //   危害说明移入该段的 title, 不再占用卡片高度。
       // v9.4: 有叠印才给按钮(无叠印时按一下纯属多余)
-      oHtml += '<div class="action-row"><button class="btn-action" id="btnOvpClear">一键清除叠印</button></div>';
+      // v9.5: 按钮前加「解锁全部」复选框(默认不勾) —— 勾选后清除前先解锁, 锁定对象的
+      //   叠印一并清除; 隐藏对象始终跳过。它只服务这个按钮, 故与按钮同生共死。
+      oHtml += '<div class="action-row">' +
+        '<div class="chk-row">' +
+        '<label class="chk" title="清除前先解锁图层、对象级锁定(Ctrl+2)与锁定组；隐藏对象一律不碰"><input type="checkbox" id="chkOvpUnlock"> 解锁全部</label>' +
+        '</div>' +
+        '<button class="btn-action" id="btnOvpClear">一键清除叠印</button>' +
+        '</div>';
     } else {
       oHtml = '文档<b class="good">无叠印</b>。';
     }
+    // v9.5: 如实标注检查范围 —— 隐藏对象 / 图层不进叠印统计(读它们得先显示, 而检查是只读的)
+    // v9.7: 删掉独立的「其中锁定对象 N 处…」灰字行 —— 锁定处数已并入上方标题行,
+    //   "勾选「解锁全部」可一并清除"移作该段的 title 悬停提示(卡片省一行)。
+    oHtml += '<div class="dim">隐藏对象与图层不参与叠印检查。</div>';
     // 副徽标(第 6 参): 只有真出现白色叠印才挂,文案带数量便于一眼定量
-    html += card("叠印", oLevel, oChip, oHtml, null, ovpW > 0 ? chip("bad", "白叠印 " + ovpW + " 处") : "");
+    //   v9.7: 原先那行「其中白色叠印 N 处(…印出来会花)」已删除, 危害说明改挂 title
+    html += card("叠印", oLevel, oChip, oHtml, null,
+      ovpW > 0 ? '<span class="chip bad" title="白色叠印后不再遮挡下层，印出来会花">白叠印 ' + ovpW + " 处</span>" : "");
 
     $("results").innerHTML = html;
 
@@ -739,6 +757,15 @@
       cu.onchange = function () {
         CHK_UNLOCK = cu.checked;
         try { localStorage.setItem("pf_chkUnlock", cu.checked ? "1" : "0"); } catch (e) {}
+      };
+    }
+    // v9.5: 叠印卡「解锁全部」回填 + 持久化(与转曲卡两个复选框同一套写法)
+    var co = $("chkOvpUnlock");
+    if (co) {
+      co.checked = CHK_OVP_UNLOCK;
+      co.onchange = function () {
+        CHK_OVP_UNLOCK = co.checked;
+        try { localStorage.setItem("pf_chkOvpUnlock", co.checked ? "1" : "0"); } catch (e) {}
       };
     }
   }
@@ -778,9 +805,12 @@
   // 转曲前的图层处理选项(默认勾选;面板重绘后状态保留)
   // v5.6: 状态持久化到 localStorage,重开面板保持上次选择(读取失败保持默认)
   var CHK_SHOW = true, CHK_UNLOCK = true;
+  // v9.5: 叠印卡「解锁全部」—— 默认**不勾**(维持 v9.4 的"不动图层状态"默认), 状态同样持久化
+  var CHK_OVP_UNLOCK = false;
   try {
     if (localStorage.getItem("pf_chkShow") !== null) CHK_SHOW = localStorage.getItem("pf_chkShow") === "1";
     if (localStorage.getItem("pf_chkUnlock") !== null) CHK_UNLOCK = localStorage.getItem("pf_chkUnlock") === "1";
+    if (localStorage.getItem("pf_chkOvpUnlock") !== null) CHK_OVP_UNLOCK = localStorage.getItem("pf_chkOvpUnlock") === "1";
   } catch (eLS) {}
 
   // v5.6/体验①: 上次结果的文档指纹;面板获得焦点时比对,切换了文档就自动重扫
@@ -851,13 +881,17 @@
   }
 
   // v9.4: 一键清除叠印 —— 只关叠印属性,不动图层/对象状态;锁定与隐藏的跳过并如实报数。
+  // v9.5: 加「解锁全部」复选框 —— 勾选后先解锁再清(锁定对象也能清), 隐藏对象始终不碰。
   //   ⚠ 文案没说"不可撤销": 转曲/嵌入是真的不可逆,而这个只是翻属性,撤销粒度我没验证过,
   //     不写死。要统一成"不可撤销"随时说。
   function onOvpClear() {
+    var uAll = $("chkOvpUnlock") ? $("chkOvpUnlock").checked : CHK_OVP_UNLOCK;
     customConfirm("将关闭文档中全部叠印（文字与图形、填充与描边）。" +
-      "\n锁定或隐藏的对象会跳过，其显示与锁定状态一律不改动。" +
+      (uAll ? "\n已勾选「解锁全部」：会先解锁全部图层与锁定对象(Ctrl+2 / 锁定组)，其叠印一并清除。"
+            : "\n未勾选「解锁全部」：锁定或隐藏的对象会跳过，其状态一律不改动。") +
+      "\n隐藏对象与图层不参与叠印检查，本操作也不会改动它们。" +
       "\n此操作会直接修改文档，确定继续?", function () {
-      execAction("pfClearOverprint();", "清除叠印完成。");
+      execAction("pfClearOverprint(" + uAll + ");", "清除叠印完成。");
     });
   }
 
