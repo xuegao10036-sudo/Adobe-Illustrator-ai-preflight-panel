@@ -2,11 +2,11 @@
 (function () {
   "use strict";
 
-  var JS_BUILD = "20260930-3";
+  var JS_BUILD = "20260930-9";
   // 必须与 jsx/preflight.jsx 里的 PF_BUILD 保持一致。
   // JSX 每次返回都会带上它的构建号,前端据此判断 ExtendScript 引擎里
   // 加载的是不是当前版本 —— 不一致就强制 $.evalFile 重载(见 execJsx)。
-  var JSX_BUILD = "9.7";
+  var JSX_BUILD = "9.9";
 
   // 全局错误捕获: 把任何未捕获异常显示到面板,便于定位"空白"问题
   window.onerror = function (msg, url, line, col) {
@@ -821,10 +821,13 @@
 
   // 自定义确认框(替代原生 confirm: 原生无法改配色/按钮文字/字号)
   // 黑色主题 + 中文大按钮; 回车=确定, Esc=取消
-  function customConfirm(msg, onOk) {
+  // v9.9: 第三参 title —— 标题按场景给(确认转曲 / 确认嵌入 / 确认清除叠印), 缺省仍为"提示"
+  function customConfirm(msg, onOk, title) {
     var mask = $("modalMask"), msgEl = $("modalMsg");
+    var titleEl = $("modalTitle");
     var okBtn = $("modalOk"), cancelBtn = $("modalCancel");
     if (!mask || !msgEl || !okBtn || !cancelBtn) { if (onOk) onOk(); return; }
+    if (titleEl) titleEl.textContent = title || "提示";
     msgEl.textContent = msg;
     mask.classList.remove("hidden");
     function done(ok) {
@@ -852,7 +855,7 @@
     else action = "将只转曲本就可见且未锁定的文字，不改动图层与对象状态。";
     customConfirm(action + "\n此操作不可撤销，确定继续?", function () {
       execAction("pfOutlineAll(" + showAll + ", " + unlockAll + ");", "转曲完成。");
-    });
+    }, "确认转曲");
   }
   // v8.1: 嵌入范围改为"点嵌入时按需统计" —— 旧版读本轮检查结果里的 linkedAll/linkedHidden,
   //   而那两个数是每轮检查都做一遍的全文档 placedItems 遍历,只为这个确认框服务(用户极少点)。
@@ -867,16 +870,20 @@
       var nHid = (data && data.ok && data.hidden) || 0;
       // v8.0: ① 如实说明范围 —— 嵌入走文档级"全部链接图"(**含隐藏对象**),与检查卡的可见口径不同,
       //          旧文案只说"所有链接图片",用户看到的"链接图片 N 张"与实际嵌入数对不上;
-      //       ② 预警矢量链接(PDF/AI/EPS)会被 300dpi 栅格化拼合为位图(不可逆:丢分层/矢量文字)。
+      //       ② v9.9: 矢量链接已不再栅格化(改走原生 embed) ⇒ 旧"会按 300dpi 栅格化为位图"
+      //          的预警一并删除。嵌入口径**跟随 Illustrator 上次用的导入选项**(psd/tif 走
+      //          photoshopFileOptions, 拼合为单个图像 ⇔ 将图层转换为对象),
+      //          所以只说明"跟随上次设置"即可, 不再逐类型承诺可编辑性 / 体积。
+      //          ⚠ 这里写 Illustrator 而非"AI": 同一句里 AI 还代表 .ai 格式, 会歧义。
       var scope = nAll > 0
         ? ("将嵌入文档中全部 " + nAll + " 张链接图" +
            (nHid > 0 ? "(其中 " + nHid + " 张为隐藏对象)" : "") + "。")
-        : "将嵌入文档中所有链接图片。";
+        : "将嵌入文档中所有链接图。";
       customConfirm(scope +
-        "\nPDF / AI / EPS 矢量链接会按 300dpi 栅格化为位图(不再保留矢量)。" +
+        "\nPSD / TIF / PDF / AI 均跟随你在 Illustrator 里上次「嵌入」的导入选项。" +
         "\n此操作不可撤销，确定继续?", function () {
         execAction("pfEmbedAll();", "嵌入完成。");
-      });
+      }, "确认嵌入");
     });
   }
 
@@ -884,15 +891,17 @@
   // v9.5: 加「解锁全部」复选框 —— 勾选后先解锁再清(锁定对象也能清), 隐藏对象始终不碰。
   //   ⚠ 文案没说"不可撤销": 转曲/嵌入是真的不可逆,而这个只是翻属性,撤销粒度我没验证过,
   //     不写死。要统一成"不可撤销"随时说。
+  // v9.9: 文案统一 —— 全角（）→ 半角()、"(Ctrl+2 / 锁定组)"→"(Ctrl+2/锁定组)"(与转曲弹窗一致),
+  //   并补第三参标题"确认清除叠印"。
   function onOvpClear() {
     var uAll = $("chkOvpUnlock") ? $("chkOvpUnlock").checked : CHK_OVP_UNLOCK;
-    customConfirm("将关闭文档中全部叠印（文字与图形、填充与描边）。" +
-      (uAll ? "\n已勾选「解锁全部」：会先解锁全部图层与锁定对象(Ctrl+2 / 锁定组)，其叠印一并清除。"
+    customConfirm("将关闭文档中全部叠印(文字与图形、填充与描边)。" +
+      (uAll ? "\n已勾选「解锁全部」：会先解锁全部图层与锁定对象(Ctrl+2/锁定组)，其叠印一并清除。"
             : "\n未勾选「解锁全部」：锁定或隐藏的对象会跳过，其状态一律不改动。") +
       "\n隐藏对象与图层不参与叠印检查，本操作也不会改动它们。" +
       "\n此操作会直接修改文档，确定继续?", function () {
       execAction("pfClearOverprint(" + uAll + ");", "清除叠印完成。");
-    });
+    }, "确认清除叠印");
   }
 
   // 事件委托: 处理动态生成的按钮

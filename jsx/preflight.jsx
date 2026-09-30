@@ -103,7 +103,7 @@ function pfStringify(value) {
 // 版本一致 → 跳过 $.evalFile 直接调用函数(省掉每次重载 28KB 脚本);
 // 不一致/不存在 → 强制重载一次。这样开发期改完 JSX 无需重启 AI。
 // v7.2: 仅随版本号递增(本版为面板文案一致化,检测逻辑与返回结构零改动)。
-var PF_BUILD = "9.7";
+var PF_BUILD = "9.9";
 
 var PT2MM = 0.3527777778;     // 1 pt = 0.3528 mm
 var MAX_SCAN = 3000;          // 每类对象最多扫描数量(防大卡死)
@@ -490,7 +490,7 @@ function runPreflight() {
   try {
     pfEnsureFonts(); // v8.5: 每次检查前同步(数量变化才重探/重建),中途激活/安装的字体不再漏识别
     if (app.documents.length === 0) {
-      res.error = "当前没有打开的文档，请先打开需要检查的 AI 文件。";
+      res.error = "当前没有打开的文档，请先打开一个 AI 文件。";
       return pfReturn(res);
     }
     var doc = app.activeDocument;
@@ -1241,7 +1241,7 @@ function pfClearBlock(node, reason) {
 function pfClearOverprint(unlockAll) {
   var res = { ok: false };
   try {
-    if (app.documents.length === 0) { res.error = "当前没有打开的文档。"; return pfReturn(res); }
+    if (app.documents.length === 0) { res.error = "当前没有打开的文档，请先打开一个 AI 文件。"; return pfReturn(res); }
     var doc = app.activeDocument;
     var uAll = (unlockAll === true);
     var cleared = 0, skipped = 0, failed = 0, unlocked = 0;
@@ -1322,7 +1322,7 @@ function pfClearOverprint(unlockAll) {
 function pfOutlineAll(showAll, unlockAll) {
   var res = { ok: false };
   try {
-    if (app.documents.length === 0) { res.error = "当前没有打开的文档。"; return pfReturn(res); }
+    if (app.documents.length === 0) { res.error = "当前没有打开的文档，请先打开一个 AI 文件。"; return pfReturn(res); }
     var doc = app.activeDocument;
     var sAll = (showAll === true);
     var uAll = (unlockAll === true);
@@ -1410,7 +1410,7 @@ function pfCountAllLinks(doc) {
 function pfLinkScope() {
   var res = { ok: false };
   try {
-    if (app.documents.length === 0) { res.error = "当前没有打开的文档。"; return pfReturn(res); }
+    if (app.documents.length === 0) { res.error = "当前没有打开的文档，请先打开一个 AI 文件。"; return pfReturn(res); }
     var c = pfCountAllLinks(app.activeDocument);
     res.ok = true;
     res.all = c.all;
@@ -1421,18 +1421,20 @@ function pfLinkScope() {
 
 // ============================================================
 // 一键嵌入所有链接图片
-// v3.6: PDF/AI/EPS 矢量链接用 embed() 会拆成多个矢量对象(分层),
-//       改为按 300dpi 栅格化,拼合为单张位图;位图链接(tif/jpg/png/psd)
-//       embed() 本身就是单张位图,保持原方式保真。
+// v3.6~v9.8: PDF/AI/EPS 曾改为 300dpi 栅格化, "拼合为单张位图"。
+// v9.9: **整条栅格化路已删除** —— 矢量链接也走原生 embed()。
+//   v9.8 的"先复制副本再栅格化"在部分稿上会同时留下 1 张 300ppi 位图 + 1 个原生嵌入对象,
+//   雪糕明确不要那张位图; 且栅格化本身会丢画板外内容(v9.8 修过一次仍属隐患)。
+//   现在所有链接(矢量 / 位图)统一 embed(), 结果与在 AI 里手动"嵌入"一致。
 // ============================================================
 function pfEmbedAll() {
   var res = { ok: false };
   try {
-    if (app.documents.length === 0) { res.error = "当前没有打开的文档。"; return pfReturn(res); }
+    if (app.documents.length === 0) { res.error = "当前没有打开的文档，请先打开一个 AI 文件。"; return pfReturn(res); }
     var doc = app.activeDocument;
 
     var pls = doc.placedItems;
-    var done = 0, failed = 0, flattened = 0;
+    var done = 0, failed = 0;
     var failedNames = []; // v4.6: 失败明细(文件名),便于用户定位问题图
     for (var i = pls.length - 1; i >= 0; i--) {
       var it = pls[i];
@@ -1441,41 +1443,19 @@ function pfEmbedAll() {
       var name = "";
       try { name = String(it.name); } catch (en2) {}
       if (!name || name === "") name = fp ? fp : "(链接图" + (i + 1) + ")";
-      var ext = "";
-      var dot = fp.lastIndexOf(".");
-      if (dot >= 0) ext = fp.substring(dot + 1).toLowerCase();
 
-      if (ext === "pdf" || ext === "ai" || ext === "eps") {
-        // 矢量链接: 栅格化拼合为单张位图(300dpi,印刷标准)
-        var okOne = false, wasFlat = false;
-        try {
-          var ro = new RasterizeOptions();
-          ro.resolution = 300;
-          ro.colorModel = RasterizationColorModel.DEFAULTCOLORMODEL;
-          ro.transparency = true;
-          ro.antiAliasingMethod = AntiAliasingMethod.ARTOPTIMIZED;
-          ro.convertSpotColors = true;
-          ro.convertTextToOutlines = true;
-          ro.includeLayers = false;
-          ro.padding = 0.0;
-          doc.rasterize(it, null, ro);
-          okOne = true; wasFlat = true;   // v8.0: 只有真栅格化成功才算"已拼合"
-        } catch (er) {
-          // v8.0: 栅格化失败回退普通嵌入 —— 对象仍是矢量、并没有被拼合,
-          //       所以只计入 done、**不再**计 flattened(旧版会谎报"已拼合为单张位图")
-          try { it.embed(); okOne = true; } catch (eb) {}
-        }
-        if (okOne) { done++; if (wasFlat) flattened++; } else { failed++; failedNames.push(name); }
-      } else {
-        // 位图链接: embed() 即为单张位图,不损失原始分辨率
-        try { it.embed(); done++; } catch (e2) { failed++; failedNames.push(name); }
-      }
+      // v9.9: 全部走 AI 原生 embed() —— 矢量链接(PDF/AI/EPS)不再栅格化为 300ppi 位图。
+      //   起因: v9.8 的"先复制副本再栅格化"在部分稿上会**同时**留下 1 张 300ppi 位图
+      //   和 1 个原生嵌入对象(同一内容两份), 雪糕明确不要那张位图。
+      //   删掉栅格化这条后: 嵌入结果与在 AI 里手动"嵌入"完全一致(内容可编辑),
+      //   栅格化特有的丢图 / 裁切 / 与位图叠影三类风险一并消失;
+      //   嵌入失败则如实计入 failedNames, 不再声称"已拼合为单张位图"。
+      try { it.embed(); done++; } catch (e2) { failed++; failedNames.push(name); }
     }
     res.ok = true;
     res.embedded = done;
     res.failedNames = failedNames;
-    res.message = "已嵌入 " + done + " 张链接图" +
-      (flattened > 0 ? "(其中 " + flattened + " 张矢量链接已拼合为单张位图)" : "") + "。" +
+    res.message = "已嵌入 " + done + " 张链接图。" +
       (failed > 0 ? " 失败 " + failed + " 张:" + failedNames.join("、") + "。" : "");
   } catch (err) {
     res.ok = false;
